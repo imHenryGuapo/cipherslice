@@ -330,6 +330,22 @@ DELIVERY_MODES = [
     "Manual download only",
 ]
 
+PRODUCT_MESSAGE = """
+CipherSlice is a prototype control plane for modern 3D printing workflows.
+
+- CipherSlice supports many common printer presets directly.
+- If your exact machine is not listed, use `Custom / Large Format`.
+- The app can still optimize around build volume, nozzle size, filament, print goal, and delivery method.
+- The user always gets the final say before any release path is enabled.
+
+Recommended path for most people right now:
+`Reliable Print Mode` + `SD card export`
+
+This is a prototype, so some advanced flows still depend on future infrastructure such as:
+- a real slicer backend
+- a local `CipherBridge` printer connector
+"""
+
 DELIVERY_MODE_DETAILS = {
     "Secure local connector": {
         "recommended": "Best long-term path",
@@ -410,6 +426,10 @@ def set_persona(persona_key: str) -> None:
 
 def set_delivery_mode(mode_name: str) -> None:
     st.session_state["delivery_mode_choice"] = mode_name
+
+
+def set_onboarding_step(step_name: str) -> None:
+    st.session_state["onboarding_step"] = step_name
 
 
 def get_persona() -> dict[str, object]:
@@ -1121,6 +1141,53 @@ st.markdown(
         border: 1px solid rgba(255, 128, 128, 0.24);
         color: #ffd8d8;
     }
+    .progress-wrap {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0.65rem;
+        margin-top: 0.8rem;
+    }
+    .progress-step {
+        border-radius: 16px;
+        padding: 0.8rem 0.9rem;
+        border: 1px solid rgba(73, 117, 150, 0.18);
+        background: rgba(8, 24, 38, 0.72);
+    }
+    .progress-step.active {
+        border-color: rgba(90, 207, 171, 0.42);
+        background: rgba(10, 34, 45, 0.94);
+        box-shadow: inset 0 0 0 1px rgba(90, 207, 171, 0.15);
+    }
+    .progress-step.done {
+        border-color: rgba(90, 207, 171, 0.24);
+        background: rgba(10, 29, 36, 0.84);
+    }
+    .progress-index {
+        color: #7ce0bf;
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 0.22rem;
+    }
+    .progress-name {
+        color: #eef7fd;
+        font-size: 0.98rem;
+        font-weight: 650;
+    }
+    .momentum-banner {
+        background: linear-gradient(135deg, rgba(79, 224, 181, 0.18), rgba(0, 104, 255, 0.12));
+        border: 1px solid rgba(90, 207, 171, 0.2);
+        border-radius: 16px;
+        padding: 0.85rem 1rem;
+        margin-top: 0.8rem;
+        color: #dcf6ec;
+    }
+    .next-button button, .back-button button {
+        min-height: 3.1rem;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        border-radius: 14px;
+    }
     .manifest-card {
         background: linear-gradient(180deg, rgba(8, 23, 37, 0.96), rgba(5, 14, 25, 0.96));
         border: 1px solid rgba(90, 207, 171, 0.18);
@@ -1174,134 +1241,186 @@ st.markdown(
 )
 
 st.write("")
+if "onboarding_step" not in st.session_state:
+    st.session_state["onboarding_step"] = "intro"
 if "persona_key" not in st.session_state:
     st.session_state["persona_key"] = "friend"
+if "delivery_mode_choice" not in st.session_state:
+    st.session_state["delivery_mode_choice"] = "SD card export"
 
-persona = get_persona()
+current_step = st.session_state["onboarding_step"]
+step_order = ["intro", "copilot", "delivery", "workflow"]
+step_titles = {
+    "intro": "Control Plane",
+    "copilot": "Copilot",
+    "delivery": "Delivery",
+    "workflow": "Workflow",
+}
+
 st.markdown('<div class="panel-card">', unsafe_allow_html=True)
-st.markdown("### Step 0: Choose Your AI Copilot")
-st.markdown(
-    """
-    <div class="persona-grid">
-        <div class="persona-card">
-            <div class="persona-title">Friend</div>
-            <div class="persona-copy">
-                Calm and supportive. Explains manufacturing choices clearly, flags risks gently, and helps users learn.
-            </div>
-        </div>
-        <div class="persona-card">
-            <div class="persona-title">Best Friend</div>
-            <div class="persona-copy">
-                Same safe recommendations, but with playful roasting energy. It always makes clear when it is joking.
-            </div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-persona_col1, persona_col2 = st.columns(2, gap="large")
-with persona_col1:
-    st.button(
-        "Friend",
-        use_container_width=True,
-        type="primary" if st.session_state["persona_key"] == "friend" else "secondary",
-        on_click=set_persona,
-        args=("friend",),
+st.markdown("### Guided Setup")
+st.caption("Move through CipherSlice one deliberate choice at a time.")
+current_index = step_order.index(current_step)
+progress_markup = '<div class="progress-wrap">'
+for index, step_key in enumerate(step_order, start=1):
+    classes = "progress-step"
+    if step_key == current_step:
+        classes += " active"
+    elif index - 1 < current_index:
+        classes += " done"
+    progress_markup += (
+        f'<div class="{classes}">'
+        f'<div class="progress-index">Step {index}</div>'
+        f'<div class="progress-name">{step_titles[step_key]}</div>'
+        f"</div>"
     )
-with persona_col2:
-    st.button(
-        "Best Friend",
-        use_container_width=True,
-        type="primary" if st.session_state["persona_key"] == "best_friend" else "secondary",
-        on_click=set_persona,
-        args=("best_friend",),
-    )
-persona = get_persona()
-st.info(f"Active copilot: `{persona['title']}`. {persona['intro']}")
+progress_markup += "</div>"
+st.markdown(progress_markup, unsafe_allow_html=True)
 st.markdown("</div>", unsafe_allow_html=True)
 
+persona = get_persona()
 slicer_label, slicer_path = detect_slicer_backend()
 connector_url, connector_state = detect_connector()
 global_state, global_message = summarize_global_readiness(slicer_path, connector_url)
 
-st.markdown('<div class="panel-card">', unsafe_allow_html=True)
-st.markdown("### System Readiness")
-status_cols = st.columns(4, gap="medium")
-status_cols[0].metric("Overall", global_state)
-status_cols[1].metric("Slicer", "Connected" if slicer_path else "Missing")
-status_cols[2].metric("Connector", "Connected" if connector_url else "Not connected")
-status_cols[3].metric("Public Site", "Ready")
-banner_class = "state-ready" if global_state == "Ready" else ("state-review" if global_state == "Needs Delivery Path" else "state-blocked")
-st.markdown(
-    f'<div class="state-banner {banner_class}">System state: {global_state}. {global_message}</div>',
-    unsafe_allow_html=True,
-)
-if global_state == "Ready":
-    st.success(global_message)
-elif global_state == "Needs Delivery Path":
-    st.warning(global_message)
-else:
-    st.error(global_message)
-st.markdown("</div>", unsafe_allow_html=True)
-
-st.markdown('<div class="panel-card">', unsafe_allow_html=True)
-st.markdown("### How CipherSlice Works")
-st.markdown(
-    """
-    1. Choose your copilot, then choose `Reliable Print Mode` for real mesh uploads or `Blueprint Assist Mode` for dimensioned technical drawings.
-    2. If you upload a mesh, CipherSlice analyzes fit, scale, mesh health, printer compatibility, plastic compatibility, and optimized print settings.
-    3. If you upload a blueprint, CipherSlice extracts advice and manufacturing requirements, but reliable printing still depends on validated 3D geometry before slicing.
-    4. The AI swarm explains its recommendations, shows confidence and objections, and lets the user override the final plan before approval.
-    5. After approval, CipherSlice either exports the artifact, prepares SD card handoff, or streams through a configured local connector.
-    """
-)
-st.info("The safest fabrication path is still: structured input -> validated mesh -> reviewed plan -> approved slicing -> selected delivery path.")
-st.markdown("</div>", unsafe_allow_html=True)
-
-if "delivery_mode_choice" not in st.session_state:
-    st.session_state["delivery_mode_choice"] = "SD card export"
-
-st.markdown('<div class="panel-card">', unsafe_allow_html=True)
-st.markdown("### Choose Delivery Strategy")
-st.markdown(
-    """
-    <div class="delivery-grid">
-    """
-    + "".join(
-        [
-            f"""
-            <div class="delivery-card">
-                <div class="delivery-title">{mode_name}</div>
-                <div class="delivery-chip">{DELIVERY_MODE_DETAILS[mode_name]['recommended']}</div>
-                <div class="delivery-copy">{DELIVERY_MODE_DETAILS[mode_name]['summary']}</div>
-                <div class="delivery-risk"><strong>Tradeoff:</strong> {DELIVERY_MODE_DETAILS[mode_name]['warning']}</div>
-            </div>
-            """
-            for mode_name in DELIVERY_MODES
-        ]
+if current_step == "intro":
+    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    st.markdown("### Step 1: Control Plane")
+    st.markdown("### System Readiness")
+    status_cols = st.columns(4, gap="medium")
+    status_cols[0].metric("Overall", global_state)
+    status_cols[1].metric("Slicer", "Connected" if slicer_path else "Missing")
+    status_cols[2].metric("Connector", "Connected" if connector_url else "Not connected")
+    status_cols[3].metric("Public Site", "Ready")
+    banner_class = "state-ready" if global_state == "Ready" else ("state-review" if global_state == "Needs Delivery Path" else "state-blocked")
+    st.markdown(
+        f'<div class="state-banner {banner_class}">System state: {global_state}. {global_message}</div>',
+        unsafe_allow_html=True,
     )
-    + "</div>",
-    unsafe_allow_html=True,
-)
-delivery_cols = st.columns(3, gap="medium")
-for column, mode_name in zip(delivery_cols, DELIVERY_MODES):
-    with column:
+    st.markdown("### How CipherSlice Works")
+    st.markdown(
+        """
+        1. Choose your copilot.
+        2. Choose your delivery strategy.
+        3. Choose `Reliable Print Mode` for real mesh uploads or `Blueprint Assist Mode` for dimensioned technical drawings.
+        4. Review the optimized plan, adjust it if needed, and approve before release.
+        5. Export, hand off, or stream based on the selected delivery path.
+        """
+    )
+    st.markdown(
+        '<div class="momentum-banner">You are looking at the system overview first. Next, choose the tone of your AI copilot.</div>',
+        unsafe_allow_html=True,
+    )
+    with st.container():
+        st.markdown('<div class="next-button">', unsafe_allow_html=True)
+        st.button("Next: Choose Copilot", use_container_width=True, type="primary", on_click=set_onboarding_step, args=("copilot",))
+        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+elif current_step == "copilot":
+    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    st.markdown("### Step 2: Choose Your AI Copilot")
+    persona_info_cols = st.columns(2, gap="large")
+    with persona_info_cols[0]:
+        st.markdown('<div class="persona-card"><div class="persona-title">Friend</div><div class="persona-copy">Calm and supportive. Explains manufacturing choices clearly, flags risks gently, and helps users learn.</div></div>', unsafe_allow_html=True)
         st.button(
-            mode_name,
+            "Friend",
             use_container_width=True,
-            type="primary" if st.session_state["delivery_mode_choice"] == mode_name else "secondary",
-            on_click=set_delivery_mode,
-            args=(mode_name,),
+            type="primary" if st.session_state["persona_key"] == "friend" else "secondary",
+            on_click=set_persona,
+            args=("friend",),
         )
-st.info(
-    f"Active delivery strategy: `{st.session_state['delivery_mode_choice']}`. "
-    f"{DELIVERY_MODE_DETAILS[st.session_state['delivery_mode_choice']]['summary']}"
-)
-st.warning(
-    "Recommended for school demos: use `Reliable Print Mode` with `SD card export`. "
-    "It works well even on locked-down club computers and still shows the full optimization + approval experience."
-)
-st.markdown("</div>", unsafe_allow_html=True)
+    with persona_info_cols[1]:
+        st.markdown('<div class="persona-card"><div class="persona-title">Best Friend</div><div class="persona-copy">Same safe recommendations, but with playful roasting energy. It always makes clear when it is joking.</div></div>', unsafe_allow_html=True)
+        st.button(
+            "Best Friend",
+            use_container_width=True,
+            type="primary" if st.session_state["persona_key"] == "best_friend" else "secondary",
+            on_click=set_persona,
+            args=("best_friend",),
+        )
+    persona = get_persona()
+    st.info(f"Active copilot: `{persona['title']}`. {persona['intro']}")
+    st.warning(PRODUCT_MESSAGE)
+    st.markdown(
+        '<div class="momentum-banner">Great. The copilot changes the tone of the guidance across the app. The optimization and release logic stay the same.</div>',
+        unsafe_allow_html=True,
+    )
+    nav_cols = st.columns(2, gap="medium")
+    with nav_cols[0]:
+        st.markdown('<div class="back-button">', unsafe_allow_html=True)
+        st.button("Back: Control Plane", use_container_width=True, on_click=set_onboarding_step, args=("intro",))
+        st.markdown("</div>", unsafe_allow_html=True)
+    with nav_cols[1]:
+        st.markdown('<div class="next-button">', unsafe_allow_html=True)
+        st.button("Next: Delivery Strategy", use_container_width=True, type="primary", on_click=set_onboarding_step, args=("delivery",))
+        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+elif current_step == "delivery":
+    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    st.markdown("### Step 3: Choose Delivery Strategy")
+    delivery_cards = st.columns(3, gap="medium")
+    for column, mode_name in zip(delivery_cards, DELIVERY_MODES):
+        details = DELIVERY_MODE_DETAILS[mode_name]
+        with column:
+            st.markdown(
+                f"""
+                <div class="delivery-card">
+                    <div class="delivery-title">{mode_name}</div>
+                    <div class="delivery-chip">{details['recommended']}</div>
+                    <div class="delivery-copy">{details['summary']}</div>
+                    <div class="delivery-risk"><strong>Tradeoff:</strong> {details['warning']}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.button(
+                mode_name,
+                use_container_width=True,
+                type="primary" if st.session_state["delivery_mode_choice"] == mode_name else "secondary",
+                on_click=set_delivery_mode,
+                args=(mode_name,),
+                key=f"delivery_{mode_name}",
+            )
+    st.info(
+        f"Active delivery strategy: `{st.session_state['delivery_mode_choice']}`. "
+        f"{DELIVERY_MODE_DETAILS[st.session_state['delivery_mode_choice']]['summary']}"
+    )
+    st.warning(
+        "Recommended for school demos: use `Reliable Print Mode` with `SD card export`. "
+        "It works well even on locked-down club computers and still shows the full optimization + approval experience."
+    )
+    st.markdown(
+        '<div class="momentum-banner">Delivery is the business side of the product. Now you are ready to enter the actual workflow and build a job.</div>',
+        unsafe_allow_html=True,
+    )
+    nav_cols = st.columns(2, gap="medium")
+    with nav_cols[0]:
+        st.markdown('<div class="back-button">', unsafe_allow_html=True)
+        st.button("Back: Copilot", use_container_width=True, on_click=set_onboarding_step, args=("copilot",))
+        st.markdown("</div>", unsafe_allow_html=True)
+    with nav_cols[1]:
+        st.markdown('<div class="next-button">', unsafe_allow_html=True)
+        st.button("Next: Build Workflow", use_container_width=True, type="primary", on_click=set_onboarding_step, args=("workflow",))
+        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+else:
+    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    st.markdown("### Step 4: Workflow")
+    st.caption("This is the main working area where users upload, configure, review, and approve the manufacturing plan.")
+    st.markdown(
+        '<div class="momentum-banner">You are now inside the main production workflow. Upload a mesh for the most dependable print path, or use blueprint mode for reconstruction guidance.</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="back-button">', unsafe_allow_html=True)
+    st.button("Back: Delivery Strategy", use_container_width=True, on_click=set_onboarding_step, args=("delivery",))
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+if current_step != "workflow":
+    st.stop()
 
 mode = st.radio(
     "Workflow Mode",
