@@ -9,7 +9,7 @@ CipherSlice is a Streamlit-based 3D printing control plane for:
 
 ## Run locally
 
-From `C:\Users\Owner\OneDrive\Desktop\3D_slicer`:
+From `C:\Users\Owner\OneDrive\Documents\GitHub\cipherslice`:
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -36,13 +36,31 @@ For a school or club demo:
 ## Delivery modes
 
 - `Secure local connector`
-  Best long-term path. Requires a slicer backend plus a local `CipherBridge` or supported relay.
+  Controlled end-to-end handoff. Requires a slicer backend plus a local `CipherBridge` or supported relay.
 
 - `SD card export`
-  Best club demo path. Practical for offline printers and locked-down school desktops.
+  Recommended club demo path. Practical for offline printers and locked-down school desktops.
 
 - `Manual download only`
   Best fallback path for review, demos, or unsupported environments.
+
+## Internal agent model
+
+CipherSlice uses a four-part internal orchestration model:
+
+- `Inspector`
+  Reviews the upload for manufacturability, scale, and geometry risk.
+
+- `Calibrator`
+  Chooses print settings around printer, filament, print goal, and reliability.
+
+- `G-Code Architect`
+  Prepares the slicing plan and the artifact path.
+
+- `Cipher Vault`
+  Handles delivery logic, release gating, and secure artifact framing.
+
+This framing is mostly for demos, judging, and technical explanation. The consumer-facing UI is intentionally simpler so the product feels more like click, drop, review, and go.
 
 ## Real-world integrations
 

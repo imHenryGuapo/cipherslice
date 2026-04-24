@@ -8,3 +8,5 @@ streamlit.out.log
 streamlit.err.log
 .env
 .env.*
+video_frames/
+video_frames_2/
