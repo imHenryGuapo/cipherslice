@@ -305,6 +305,51 @@ def build_bed_preview_svg(mesh_analysis: dict[str, object] | None, printer_profi
     """
 
 
+def build_model_shape_preview_svg(mesh_analysis: dict[str, object] | None) -> str:
+    if not mesh_analysis or not mesh_analysis.get("scaled_extents_mm"):
+        return """
+        <div class="shape-preview-empty">
+            Shape preview appears after CipherSlice reads the model dimensions.
+        </div>
+        """
+
+    part_x, part_y, part_z = mesh_analysis["scaled_extents_mm"]
+    max_dim = max(part_x, part_y, part_z, 1)
+    scale = 92 / max_dim
+
+    def view_rect(width: float, height: float) -> tuple[float, float]:
+        return max(12, width * scale), max(12, height * scale)
+
+    top_w, top_h = view_rect(part_x, part_y)
+    front_w, front_h = view_rect(part_x, part_z)
+    side_w, side_h = view_rect(part_y, part_z)
+    views = [
+        ("Top X/Y", top_w, top_h),
+        ("Front X/Z", front_w, front_h),
+        ("Side Y/Z", side_w, side_h),
+    ]
+    cards = []
+    for label, width, height in views:
+        rect_x = 58 - (width / 2)
+        rect_y = 56 - (height / 2)
+        cards.append(
+            f"""
+            <div class="shape-view">
+                <svg viewBox="0 0 116 112" class="shape-svg" aria-hidden="true">
+                    <rect x="10" y="10" width="96" height="88" rx="10" fill="rgba(8,22,36,0.85)" stroke="rgba(104,144,177,0.25)" />
+                    <line x1="18" y1="56" x2="98" y2="56" stroke="rgba(151,179,201,0.13)" />
+                    <line x1="58" y1="18" x2="58" y2="92" stroke="rgba(151,179,201,0.13)" />
+                    <rect x="{rect_x:.1f}" y="{rect_y:.1f}" width="{width:.1f}" height="{height:.1f}" rx="7"
+                          fill="rgba(90,207,171,0.24)" stroke="#8fe6cf" stroke-width="2" />
+                </svg>
+                <div class="shape-label">{label}</div>
+            </div>
+            """
+        )
+
+    return "<div class='shape-preview-grid'>" + "".join(cards) + "</div>"
+
+
 def build_mesh_preview_metrics(
     mesh_analysis: dict[str, object] | None,
     printer_profile: dict[str, object],
@@ -338,6 +383,53 @@ def build_engine_connection_summary(
     if slicer_path:
         return ("Engine ready", "CipherSlice can generate a real print file now. Hardware can be connected later.")
     return ("Planning only", "CipherSlice can plan and prepare the job, but a real slicer still needs to be connected.")
+
+
+def build_guidance_visibility_summary(runtime_meta: dict[str, object]) -> tuple[str, str]:
+    if runtime_meta.get("using_live_workers"):
+        return (
+            "Live guidance",
+            "Specialized model workers are connected behind the scenes. The site only shows their short user-facing summaries.",
+        )
+    if runtime_meta.get("status") == "Hybrid mode":
+        return (
+            "Hybrid guidance",
+            "Some live workers answered, and CipherSlice filled the rest with built-in planning logic.",
+        )
+    return (
+        "Built-in guidance",
+        "CipherSlice is using its built-in planning logic. Live model workers can be enabled later with environment variables.",
+    )
+
+
+def build_print_engine_setup_notes(
+    slicer_label: str | None,
+    slicer_path: str | None,
+    command_preview: str,
+    engine_diagnostics: list[str],
+) -> str:
+    return textwrap.dedent(
+        f"""
+        CipherSlice Print Engine Setup Notes
+
+        Current engine: {slicer_label or 'Not detected'}
+        Current path: {slicer_path or 'None configured'}
+
+        Expected environment variable:
+        CIPHERSLICE_SLICER_PATH=<full path to PrusaSlicer, OrcaSlicer, or Slic3r console executable>
+
+        Command preview:
+        {command_preview or 'Command preview appears after a reliable mesh job is prepared.'}
+
+        Diagnostics:
+        {chr(10).join(f'- {note}' for note in engine_diagnostics)}
+
+        Notes:
+        - A printer is not needed to test this connection.
+        - The slicer backend is what turns the approved model and settings into real production G-code.
+        - Hardware delivery can stay as SD card or manual download until a connector is installed later.
+        """
+    ).strip()
 
 
 def build_job_context(
@@ -1973,6 +2065,36 @@ st.markdown(
         font-size: 0.9rem;
         font-weight: 650;
     }
+    .shape-preview-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.45rem;
+        margin-top: 0.7rem;
+    }
+    .shape-view {
+        background: rgba(7, 18, 30, 0.58);
+        border: 1px solid rgba(104, 144, 177, 0.16);
+        border-radius: 10px;
+        padding: 0.35rem;
+        text-align: center;
+    }
+    .shape-svg {
+        width: 100%;
+        display: block;
+    }
+    .shape-label {
+        color: #b7c8d5;
+        font-size: 0.76rem;
+        margin-top: 0.15rem;
+    }
+    .shape-preview-empty {
+        border: 1px dashed rgba(104, 144, 177, 0.28);
+        border-radius: 10px;
+        color: #9db4c7;
+        padding: 0.75rem;
+        margin-top: 0.65rem;
+        font-size: 0.9rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -2989,6 +3111,13 @@ if active_job:
         slicer_path,
         connector_url,
     )
+    guidance_title, guidance_copy = build_guidance_visibility_summary(agent_runtime_meta)
+    print_engine_setup_notes = build_print_engine_setup_notes(
+        slicer_label,
+        slicer_path,
+        slicer_command_preview,
+        engine_diagnostics,
+    )
 
     with result_col:
         st.markdown('<div class="panel-card">', unsafe_allow_html=True)
@@ -3032,6 +3161,7 @@ if active_job:
                 with st.container(border=True):
                     st.markdown("#### Bed + Size Preview")
                     st.markdown(build_bed_preview_svg(mesh_analysis, printer_profile), unsafe_allow_html=True)
+                    st.markdown(build_model_shape_preview_svg(mesh_analysis), unsafe_allow_html=True)
                     st.markdown(f"- **Printer volume:** `{format_xyz_dims(build_x, build_y, build_z)}`")
                     if mesh_analysis and mesh_analysis.get("scaled_extents_mm"):
                         px, py, pz = mesh_analysis["scaled_extents_mm"]
@@ -3067,8 +3197,9 @@ if active_job:
                     st.markdown(f"- **Support / adhesion:** `{'Enabled' if optimized_plan['support_enabled'] else 'Disabled'} / {optimized_plan['adhesion']}`")
                     st.markdown(f"- **Delivery path:** `{delivery_mode}`")
                     st.markdown(f"- **Job mode:** `{execution_label}`")
-                    st.markdown(f"- **AI worker engine:** `{agent_runtime_meta['status']}`")
+                    st.markdown(f"- **Guidance engine:** `{guidance_title}`")
                     st.markdown(f"- **Print engine state:** `{connection_title}`")
+                    st.caption(guidance_copy)
                     st.caption(connection_copy)
             st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
             with st.container(border=True):
@@ -3078,7 +3209,7 @@ if active_job:
                     - **Source file:** `{filename}`
                     - **Payload size:** `{format_bytes(file_size)}`
                     - **Job mode:** `{execution_label}`
-                    - **AI worker engine:** `{agent_runtime_meta['status']}`
+                    - **Guidance engine:** `{guidance_title}`
                     - **Printer profile:** `{printer}`
                     - **Filament strategy:** `{filament}`
                     - **Build volume:** `{format_xyz_dims(build_x, build_y, build_z)}`
@@ -3093,6 +3224,7 @@ if active_job:
                     "<div class='metric-chip-row'>"
                     f"<span class='metric-chip'><strong>Output:</strong> {output_type_title}</span>"
                     f"<span class='metric-chip'><strong>Engine:</strong> {connection_title}</span>"
+                    f"<span class='metric-chip'><strong>Guidance:</strong> {guidance_title}</span>"
                     f"<span class='metric-chip'><strong>Confidence:</strong> {overall_confidence * 100:.0f}%</span>"
                     "</div>",
                     unsafe_allow_html=True,
@@ -3196,6 +3328,13 @@ if active_job:
                         data=json.dumps(handoff_contract, indent=2),
                         file_name=f"{file_stem}_handoff_contract.json",
                         mime="application/json",
+                        use_container_width=True,
+                    )
+                    st.download_button(
+                        "Download Print Engine Setup Notes",
+                        data=print_engine_setup_notes,
+                        file_name=f"{file_stem}_print_engine_setup.txt",
+                        mime="text/plain",
                         use_container_width=True,
                     )
                 if operator_handoff_sheet:
@@ -3396,13 +3535,19 @@ if active_job:
                     f"""
                     - **Detected print engine:** `{slicer_label or 'Not detected'}`
                     - **Engine path:** `{slicer_path or 'None configured'}`
-                    - **AI worker runtime:** `{agent_runtime_meta['status']}`
+                    - **Guidance runtime:** `{agent_runtime_meta['status']}`
                     - **Printer link:** `{connector_url or 'Not connected'}`
                     """
                 )
                 if slicer_command_preview:
                     st.caption("When a supported engine is available, CipherSlice prepares a CLI handoff like this:")
                     st.code(slicer_command_preview, language="bash")
+                with st.expander("Developer details"):
+                    st.markdown(f"- **Guidance mode:** `{guidance_title}`")
+                    st.markdown(f"- **Runtime detail:** {agent_runtime_meta['detail']}")
+                    st.markdown("**Engine notes**")
+                    for note in engine_diagnostics:
+                        st.markdown(f"- {note}")
                 if slicer_path:
                     st.success("CipherSlice can hand this approved plan to a real slicer backend. A physical printer is still optional until you want to run the job.")
                 else:
