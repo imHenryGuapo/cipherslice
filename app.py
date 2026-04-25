@@ -305,6 +305,41 @@ def build_bed_preview_svg(mesh_analysis: dict[str, object] | None, printer_profi
     """
 
 
+def build_mesh_preview_metrics(
+    mesh_analysis: dict[str, object] | None,
+    printer_profile: dict[str, object],
+) -> list[tuple[str, str]]:
+    if not mesh_analysis or not mesh_analysis.get("scaled_extents_mm"):
+        return [
+            ("Bed use", "Pending"),
+            ("Height use", "Pending"),
+            ("Mesh health", "Scan needed"),
+        ]
+
+    part_x, part_y, part_z = mesh_analysis["scaled_extents_mm"]
+    bed_x, bed_y, bed_z = parse_bed_dimensions(printer_profile)
+    bed_use = min(100.0, ((part_x * part_y) / max((bed_x * bed_y), 1)) * 100)
+    height_use = min(100.0, (part_z / max(bed_z, 1)) * 100)
+    mesh_health = "Watertight" if mesh_analysis.get("watertight") else "Needs repair"
+    return [
+        ("Bed use", f"{bed_use:.0f}%"),
+        ("Height use", f"{height_use:.0f}%"),
+        ("Mesh health", mesh_health),
+    ]
+
+
+def build_engine_connection_summary(
+    slicer_label: str | None,
+    slicer_path: str | None,
+    connector_url: str | None,
+) -> tuple[str, str]:
+    if slicer_path and connector_url:
+        return ("Engine + link ready", "CipherSlice can slice for real and hand the job toward a connected printer path.")
+    if slicer_path:
+        return ("Engine ready", "CipherSlice can generate a real print file now. Hardware can be connected later.")
+    return ("Planning only", "CipherSlice can plan and prepare the job, but a real slicer still needs to be connected.")
+
+
 def build_job_context(
     mode: str,
     filename: str,
@@ -1907,6 +1942,23 @@ st.markdown(
         color: #fff1c2;
         font-size: 0.8rem;
     }
+    .metric-chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem;
+        margin-top: 0.55rem;
+    }
+    .metric-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.25rem 0.58rem;
+        border-radius: 999px;
+        background: rgba(90, 207, 171, 0.12);
+        border: 1px solid rgba(90, 207, 171, 0.16);
+        color: #dffcf2;
+        font-size: 0.82rem;
+    }
     .bed-preview-shell {
         margin-top: 0.2rem;
     }
@@ -2932,19 +2984,24 @@ if active_job:
         agent_runtime_meta,
         delivery_mode,
     )
+    connection_title, connection_copy = build_engine_connection_summary(
+        slicer_label,
+        slicer_path,
+        connector_url,
+    )
 
     with result_col:
         st.markdown('<div class="panel-card">', unsafe_allow_html=True)
-        st.markdown("### Plan Snapshot")
+        st.markdown("### Current Print Plan")
         summary_col1, summary_col2 = st.columns(2, gap="medium")
         with summary_col1:
             with st.container(border=True):
-                st.markdown("#### What Works Right Now")
+                st.markdown("#### Ready Now")
                 st.markdown(f"**{phase_title}**")
                 st.write(phase_copy)
         with summary_col2:
             with st.container(border=True):
-                st.markdown("#### What Still Needs Setup")
+                st.markdown("#### Still To Connect")
                 if mode != "Reliable Print Mode":
                     st.write("A validated 3D model still needs to be created or imported before CipherSlice can move into real slicing.")
                 elif slicer_path:
@@ -2973,7 +3030,7 @@ if active_job:
             preview_col1, preview_col2 = st.columns(2, gap="medium")
             with preview_col1:
                 with st.container(border=True):
-                    st.markdown("#### Size Snapshot")
+                    st.markdown("#### Bed + Size Preview")
                     st.markdown(build_bed_preview_svg(mesh_analysis, printer_profile), unsafe_allow_html=True)
                     st.markdown(f"- **Printer volume:** `{format_xyz_dims(build_x, build_y, build_z)}`")
                     if mesh_analysis and mesh_analysis.get("scaled_extents_mm"):
@@ -2986,13 +3043,23 @@ if active_job:
                         st.markdown("- **Part size:** `Pending mesh analysis`")
                     st.markdown(f"- **Fit state:** `{fit_title}`")
                     st.caption(fit_copy)
+                    preview_metrics = build_mesh_preview_metrics(mesh_analysis, printer_profile)
+                    st.markdown(
+                        "<div class='metric-chip-row'>"
+                        + "".join(
+                            f"<span class='metric-chip'><strong>{label}:</strong> {value}</span>"
+                            for label, value in preview_metrics
+                        )
+                        + "</div>",
+                        unsafe_allow_html=True,
+                    )
                     if mesh_analysis and mesh_analysis.get("geometry_profile"):
                         st.markdown(f"- **Geometry profile:** `{mesh_analysis['geometry_profile']}`")
                     for adaptive_note in (mesh_analysis or {}).get("adaptive_notes", []):
                         st.caption(adaptive_note)
             with preview_col2:
                 with st.container(border=True):
-                    st.markdown("#### Quick Plan Check")
+                    st.markdown("#### At a Glance")
                     st.caption(f"Built in `{persona['label']}` tone.")
                     st.markdown(f"- **Printer:** `{printer}`")
                     st.markdown(f"- **Filament:** `{filament}`")
@@ -3001,6 +3068,8 @@ if active_job:
                     st.markdown(f"- **Delivery path:** `{delivery_mode}`")
                     st.markdown(f"- **Job mode:** `{execution_label}`")
                     st.markdown(f"- **AI worker engine:** `{agent_runtime_meta['status']}`")
+                    st.markdown(f"- **Print engine state:** `{connection_title}`")
+                    st.caption(connection_copy)
             st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
             with st.container(border=True):
                 st.markdown("#### Plan")
@@ -3020,6 +3089,14 @@ if active_job:
                     - **Adhesion / nozzle:** `{optimized_plan['adhesion']} / {optimized_plan['nozzle_diameter']} mm`
                     """
                 )
+                st.markdown(
+                    "<div class='metric-chip-row'>"
+                    f"<span class='metric-chip'><strong>Output:</strong> {output_type_title}</span>"
+                    f"<span class='metric-chip'><strong>Engine:</strong> {connection_title}</span>"
+                    f"<span class='metric-chip'><strong>Confidence:</strong> {overall_confidence * 100:.0f}%</span>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
             with st.container(border=True):
                 st.markdown("#### Warnings")
                 if objections:
@@ -3027,6 +3104,10 @@ if active_job:
                         st.markdown(f"- {reason}")
                 else:
                     st.success("No blocking warnings are active for the current live plan.")
+                if mesh_analysis and mesh_analysis.get("adaptive_notes"):
+                    st.caption("Model-specific guidance:")
+                    for adaptive_note in mesh_analysis["adaptive_notes"]:
+                        st.markdown(f"- {adaptive_note}")
             with st.container(border=True):
                 st.markdown("#### Plan Changes")
                 if plan_diff_lines:
@@ -3058,7 +3139,7 @@ if active_job:
                 """,
                 unsafe_allow_html=True,
             )
-            st.markdown("### Next Action")
+            st.markdown("### Best Next Move")
             st.info(next_action)
             if not slicer_path:
                 st.warning(
@@ -3310,7 +3391,7 @@ if active_job:
                     """
                 )
             if mode == "Reliable Print Mode":
-                st.markdown("#### Print Engine Setup")
+                st.markdown("#### Print Engine Connection")
                 st.markdown(
                     f"""
                     - **Detected print engine:** `{slicer_label or 'Not detected'}`
@@ -3340,7 +3421,7 @@ if active_job:
                 st.markdown("- Return to CipherSlice with a validated mesh for real slicing.")
 
         with st.container(border=True):
-            st.markdown("#### Confidence + Output")
+            st.markdown("#### Release Review")
             st.markdown("##### Confidence Gate")
             for agent_name, score in consensus_scores.items():
                 st.markdown(f"- **{agent_name}:** `{score * 100:.1f}%`")
