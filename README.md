@@ -37,24 +37,6 @@ For a school or club demo:
 
 The next 50 pre-printer milestones live in [ROADMAP.md](ROADMAP.md). That file tracks what we can keep coding before the project truly needs a real slicer backend, printer connector, and physical printer access.
 
-## How to explain AI use honestly
-
-CipherSlice is AI-assisted software, not a secret hand-coded solo project.
-
-The honest pitch is:
-
-> I used AI as a coding partner to help design, implement, debug, and iterate faster. I still directed the product, interviewed users, tested the app, chose what mattered, and made the final decisions. The app is transparent about what it can and cannot do, especially around real slicer output and printer access.
-
-If someone asks why a change was made:
-
-> That update came from user feedback and safety review. The goal was to make the app clearer about whether it is producing a planning preview or a real printer-ready file.
-
-If someone challenges the AI part:
-
-> I understand the concern. I am not claiming I wrote every line alone. I am learning by building with AI, reading the output, testing it, and asking better technical questions. This is closer to having a fast pair programmer than pretending I already know everything.
-
-The strongest position is transparency plus ownership: do not hide the AI, but also do not hand away your role as the product builder.
-
 ## Delivery modes
 
 - `Secure local connector`
