@@ -1008,6 +1008,53 @@ def build_output_type_summary(mode: str, slicer_path: str | None) -> tuple[str, 
     )
 
 
+def build_confidence_explanation(
+    mode: str,
+    overall_confidence: float,
+    slicer_path: str | None,
+    objections: list[str],
+) -> list[str]:
+    confidence_percent = overall_confidence * 100
+    notes = [f"Current review confidence is {confidence_percent:.1f}%."]
+    if mode != "Reliable Print Mode":
+        notes.append("Blueprint jobs stay held because a 2D drawing still needs validated 3D geometry before slicing.")
+    elif not slicer_path:
+        notes.append("Confidence is intentionally capped because no real slicer backend is connected yet.")
+        notes.append("Different files may still share similar settings until real slicing and deeper geometry checks are available.")
+    elif objections:
+        notes.append("Confidence is held because at least one review blocker still needs to be resolved.")
+    else:
+        notes.append("A slicer backend is connected, so the plan can move closer to production review after user approval.")
+    if confidence_percent < 94:
+        notes.append("CipherSlice requires at least 94% confidence before claiming a production-ready release.")
+    else:
+        notes.append("This clears the software review threshold, but the user still has final approval.")
+    return notes
+
+
+def build_pre_printer_checklist(
+    mode: str,
+    slicer_path: str | None,
+    connector_url: str | None,
+    delivery_mode: str,
+    is_production_print_file: bool,
+) -> list[tuple[str, str]]:
+    if mode != "Reliable Print Mode":
+        return [
+            ("Validated 3D model", "Still needed"),
+            ("Slicer backend", "Still needed after geometry exists"),
+            ("Printer access", "Not needed yet"),
+            ("Safe output", "Draft brief only"),
+        ]
+    return [
+        ("Uploaded mesh", "Ready"),
+        ("Slicer backend", "Connected" if slicer_path else "Still needed"),
+        ("Production print file", "Ready" if is_production_print_file else "Preview only"),
+        ("Printer connector", "Connected" if connector_url else "Optional until direct printer handoff"),
+        ("Delivery route", delivery_mode),
+    ]
+
+
 def build_engine_diagnostics(
     slicer_label: str | None,
     slicer_path: str | None,
@@ -3091,9 +3138,9 @@ if active_job:
             time.sleep(0.45)
 
         vault_line = (
-            f"Generated secure delivery hash `{artifact_hash[:18]}...` and encrypted the output file for controlled delivery."
+            f"Generated secure print package hash `{artifact_hash[:18]}...` and encrypted the output file for controlled delivery."
             if encrypted_artifact
-            else f"Generated secure delivery hash `{artifact_hash[:18]}...` and staged the output file for controlled delivery."
+            else f"Generated secure print package hash `{artifact_hash[:18]}...` and staged the output file for controlled delivery."
         )
         st.markdown(f"**{agent_packets['Cipher Vault']['title']}**  \n{agent_packets['Cipher Vault']['summary']}  \n{vault_line}")
         if release_allowed:
@@ -3138,6 +3185,35 @@ if active_job:
         slicer_command_preview,
         engine_diagnostics,
     )
+    is_production_print_file = mode == "Reliable Print Mode" and bool(slicer_path)
+    print_file_download_label = (
+        "Download Print File"
+        if is_production_print_file
+        else "Download Preview Plan (Not Printer-Ready)"
+    )
+    print_file_download_name = (
+        f"{file_stem}_{sanitize_download_name(printer.lower())}.gcode"
+        if is_production_print_file
+        else f"{file_stem}_{sanitize_download_name(printer.lower())}_preview_not_for_printer.gcode"
+    )
+    release_caption = (
+        "Approve the plan first, then download the real slicer output or setup files."
+        if is_production_print_file
+        else "Approve the plan first, then download the preview or setup files. The preview is not printer-ready until a slicer backend is connected."
+    )
+    approval_label = (
+        "I approve this manufacturing plan and understand this download is printer-ready only after real slicer output exists"
+        if is_production_print_file
+        else "I understand this is a planning preview, and I approve saving or sharing this setup package"
+    )
+    confidence_notes = build_confidence_explanation(mode, overall_confidence, slicer_path, objections)
+    pre_printer_checklist = build_pre_printer_checklist(
+        mode,
+        slicer_path,
+        connector_url,
+        delivery_mode,
+        is_production_print_file,
+    )
 
     with result_col:
         st.markdown('<div class="panel-card">', unsafe_allow_html=True)
@@ -3173,6 +3249,18 @@ if active_job:
             """,
             unsafe_allow_html=True,
         )
+        with st.container(border=True):
+            st.markdown("#### What This Can Do Right Now")
+            for label, value in pre_printer_checklist:
+                st.markdown(f"- **{label}:** `{value}`")
+            if not slicer_path and mode == "Reliable Print Mode":
+                st.caption(
+                    "Plain English: CipherSlice can inspect and plan the print today, but it should not claim real production G-code until a slicer engine is connected."
+                )
+        with st.container(border=True):
+            st.markdown("#### Why The Confidence Score Looks Like This")
+            for note in confidence_notes:
+                st.markdown(f"- {note}")
         if mode == "Reliable Print Mode":
             build_x, build_y, build_z = parse_bed_dimensions(printer_profile)
             fit_title, fit_copy = summarize_fit(mesh_analysis, printer_profile)
@@ -3310,7 +3398,7 @@ if active_job:
             for label, value in status_rows:
                 st.markdown(f"- **{label}:** `{value}`")
             final_user_approval = st.checkbox(
-                "I approve this manufacturing plan and want CipherSlice to release this job",
+                approval_label,
                 key=approval_key,
             )
             status_rows = build_status_board(
@@ -3326,11 +3414,11 @@ if active_job:
                 st.markdown(f"- **{label}:** `{value}`")
             with st.container(border=True):
                 st.markdown("#### Release")
-                st.caption("Approve the plan first, then choose the output or setup file you want to carry forward.")
+                st.caption(release_caption)
                 st.download_button(
-                    "Download Planned Output" if not slicer_path else "Download Print File",
+                    print_file_download_label,
                     data=primary_artifact,
-                    file_name=f"{file_stem}_{sanitize_download_name(printer.lower())}.gcode",
+                    file_name=print_file_download_name,
                     mime="text/plain",
                     use_container_width=True,
                     disabled=not (release_allowed and final_user_approval),
