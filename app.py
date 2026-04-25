@@ -148,8 +148,8 @@ DELIVERY_MODE_DETAILS = {
     },
     "Manual download only": {
         "recommended": "",
-        "summary": "Safest choice when you want analysis, recommendations, and a downloadable artifact without printer handoff.",
-        "warning": "No direct execution path. The user still has to move the file into their own workflow.",
+        "summary": "Safest choice when you want analysis, recommendations, and a downloadable print file without printer handoff.",
+        "warning": "No direct printer handoff. The user still has to move the file into their own workflow.",
     },
 }
 
@@ -167,7 +167,7 @@ AGENT_IDENTITIES = {
         "profiles into printer-specific toolpaths and readable manufacturing summaries."
     ),
     "Cipher Vault": (
-        "Secure artifact delivery agent. Hashes, encrypts, labels, and stages artifacts so the "
+        "Secure print package delivery agent. Hashes, encrypts, labels, and stages print files so the "
         "consumer receives the right file with traceable provenance."
     ),
 }
@@ -186,7 +186,7 @@ LIVE_AGENT_CONFIGS = {
     "G-Code Architect": {
         "focus": "Prepare the slicer-ready plan and final manufacturing handoff package.",
         "handoff_to": "Cipher Vault",
-        "ui_title": "Artifact generation",
+        "ui_title": "Print file prep",
     },
     "Cipher Vault": {
         "focus": "Package, hash, encrypt, and gate release according to the delivery path.",
@@ -845,7 +845,7 @@ def build_execution_status(mode: str, slicer_path: str | None) -> tuple[str, str
         return (
             "Planning mode",
             "state-review",
-            "CipherSlice can analyze, optimize, and package the job, but this environment still uses a placeholder artifact path until a real slicer backend is connected.",
+            "CipherSlice can analyze, optimize, and package the job, but this environment still uses a preview print file until a real slicer backend is connected.",
         )
     return (
         "Blueprint review mode",
@@ -864,6 +864,15 @@ def set_delivery_mode(mode_name: str) -> None:
 
 def set_experience_mode(mode_name: str) -> None:
     st.session_state["experience_mode"] = mode_name
+
+
+def clear_active_job() -> None:
+    active_job = st.session_state.get("active_job")
+    if active_job:
+        approval_key = active_job.get("approval_key")
+        if approval_key:
+            st.session_state.pop(approval_key, None)
+    st.session_state["active_job"] = None
 
 
 def get_persona() -> dict[str, object]:
@@ -2117,7 +2126,7 @@ st.markdown(
             </div>
             <div class="metric-box">
                 <div class="metric-label">Output Path</div>
-                <div class="metric-value">Secure Artifact Delivery</div>
+                <div class="metric-value">Secure Print File Delivery</div>
             </div>
             <div class="metric-box">
                 <div class="metric-label">Security Layer</div>
@@ -2137,8 +2146,16 @@ if "active_job" not in st.session_state:
 if "experience_mode" not in st.session_state:
     st.session_state["experience_mode"] = "Beginner"
 
-    persona = get_persona()
-    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+persona = get_persona()
+st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+if st.session_state.get("active_job"):
+    active_name = st.session_state["active_job"].get("filename", "current job")
+    active_mode = st.session_state["active_job"].get("mode", "print job")
+    st.info(
+        f"Active job loaded: `{active_name}` in `{active_mode}`. "
+        "Your review and approval controls are still available below."
+    )
+    st.button("Start a Different Job", use_container_width=True, on_click=clear_active_job)
 st.markdown("### Step 0: Choose Your AI Copilot")
 st.markdown(
     """
@@ -2253,7 +2270,7 @@ with left_col:
         st.markdown("### Step 1: Input Zone")
         st.markdown(
             '<div class="mode-banner"><strong>Reliable Print Mode</strong><br/>'
-            "Upload a real mesh file and CipherSlice will prepare a printer-targeted artifact flow.</div>",
+            "Upload a real mesh file and CipherSlice will prepare a printer-targeted print package.</div>",
             unsafe_allow_html=True,
         )
         uploaded_file = st.file_uploader(
@@ -2361,7 +2378,7 @@ with left_col:
         DELIVERY_MODES,
         index=DELIVERY_MODES.index(st.session_state.get("delivery_mode_choice", "SD card export")),
         horizontal=True,
-        help="Choose how the approved artifact should leave CipherSlice once the user signs off.",
+        help="Choose how the approved print package should leave CipherSlice once the user signs off.",
     )
     st.session_state["delivery_mode_choice"] = delivery_mode
     st.markdown("</div>", unsafe_allow_html=True)
@@ -2422,13 +2439,13 @@ with left_col:
             layer_override = st.number_input("Layer height override (mm)", min_value=0.0, max_value=1.0, value=0.0, step=0.02, format="%.2f")
             speed_override = st.number_input("Print speed override (mm/s)", min_value=0, max_value=400, value=0, step=5)
             infill_override = st.number_input("Infill override (%)", min_value=0, max_value=100, value=0, step=1)
-    wants_encryption = st.checkbox("Encrypt downloadable artifact", value=True)
+    wants_encryption = st.checkbox("Encrypt downloadable print file", value=True)
     encryption_passphrase = ""
     if wants_encryption:
         encryption_passphrase = st.text_input(
             "Encryption passphrase",
             type="password",
-            help="Use a passphrase if you want Cipher Vault to issue an encrypted downloadable artifact.",
+            help="Use a passphrase if you want Cipher Vault to issue an encrypted downloadable print file.",
         )
 
     blueprint_name = ""
@@ -2492,13 +2509,14 @@ with left_col:
         st.caption("Awaiting technical drawing. Upload a dimensioned blueprint image or PDF to unlock the draft pipeline.")
 
     launch = st.button(
-        "Build Print Plan",
+        "Create Print Plan",
         type="primary",
         disabled=launch_disabled,
         use_container_width=True,
         help=launch_help,
     )
     if launch and uploaded_file is not None:
+        new_artifact_hash = build_hash(uploaded_file.name, uploaded_file.size, printer, filament)
         st.session_state["active_job"] = {
             "mode": mode,
             "filename": uploaded_file.name,
@@ -2530,6 +2548,7 @@ with left_col:
                 "speed_override": speed_override,
                 "infill_override": infill_override,
             },
+            "approval_key": f"approve_{new_artifact_hash}",
         }
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -2542,7 +2561,7 @@ with right_col:
     st.caption(profile_mode_copy)
     if mode == "Reliable Print Mode":
         st.info(
-            "This is the dependable consumer path. Real mesh in, printer-specific artifact out, with encryption available for delivery."
+            "This is the dependable consumer path. Real mesh in, printer-specific print package out, with encryption available for delivery."
         )
     else:
         st.info(
@@ -2569,7 +2588,7 @@ with right_col:
     )
     if wants_encryption:
         if CRYPTOGRAPHY_AVAILABLE:
-            st.success("Artifact encryption is enabled. Cipher Vault can issue an encrypted payload.")
+            st.success("Print-file encryption is enabled. Cipher Vault can issue an encrypted download.")
         else:
             st.error("`cryptography` is not installed yet, so encrypted downloads are not available in this environment.")
     st.markdown("</div>", unsafe_allow_html=True)
@@ -2638,6 +2657,7 @@ if active_job:
     auto_scale_mesh = active_job["auto_scale_mesh"]
     orientation = str(printer_profile["orientation"])
     artifact_hash = build_hash(filename, file_size, printer, filament)
+    approval_key = active_job.get("approval_key", f"approve_{artifact_hash}")
     stream_aborted = False
     slicer_label, slicer_path = detect_slicer_backend()
     connector_url, connector_state = detect_connector()
@@ -3036,7 +3056,7 @@ if active_job:
     elif agent_runtime_meta["status"] != "Disabled":
         st.caption(agent_runtime_meta["detail"])
 
-    with st.status("CipherSlice processing engaged", expanded=True) as status:
+    with st.status("Building your print plan", expanded=True) as status:
         if mode == "Reliable Print Mode":
             st.markdown(
                 f"**{agent_packets['Inspector']['title']}**  \n"
@@ -3077,13 +3097,13 @@ if active_job:
         )
         st.markdown(f"**{agent_packets['Cipher Vault']['title']}**  \n{agent_packets['Cipher Vault']['summary']}  \n{vault_line}")
         if release_allowed:
-            st.success(f"Consensus gate cleared at {overall_confidence * 100:.1f}% confidence. Artifact release is allowed.")
+            st.success(f"Review check cleared at {overall_confidence * 100:.1f}% confidence. This job is ready for approval.")
         else:
-            st.warning(f"Consensus gate stopped release at {overall_confidence * 100:.1f}% confidence. Human review or more infrastructure is required.")
-        status.update(label="CipherSlice processing completed", state="complete", expanded=True)
+            st.warning(f"Review check held this job at {overall_confidence * 100:.1f}% confidence. More setup or review is required.")
+        status.update(label="Print plan ready for review", state="complete", expanded=True)
 
     result_col, code_col = st.columns([0.9, 1.1], gap="large")
-    final_user_approval = False
+    final_user_approval = bool(st.session_state.get(approval_key, False))
     next_action = recommend_next_action(
         mode,
         release_allowed,
@@ -3207,7 +3227,7 @@ if active_job:
                 st.markdown(
                     f"""
                     - **Source file:** `{filename}`
-                    - **Payload size:** `{format_bytes(file_size)}`
+                    - **File size:** `{format_bytes(file_size)}`
                     - **Job mode:** `{execution_label}`
                     - **Guidance engine:** `{guidance_title}`
                     - **Printer profile:** `{printer}`
@@ -3249,8 +3269,8 @@ if active_job:
                 else:
                     st.success("The current live plan still matches the recommended defaults.")
             st.markdown(
-                f'<div class="success-banner">Secure delivery package ready for {filename}. '
-                f'Encrypted for protected printer handoff.</div>',
+                f'<div class="success-banner">Delivery package ready for {filename}. '
+                f'Protected for approved printer handoff.</div>',
                 unsafe_allow_html=True,
             )
             st.markdown("#### Final Print Manifest")
@@ -3276,7 +3296,7 @@ if active_job:
             if not slicer_path:
                 st.warning(
                     "Production release is still held by design because no slicer backend is connected. "
-                    "That is why the artifact score stays capped and different files can still share similar high-level settings."
+                    "That is why the print-file score stays capped and different files can still share similar high-level settings."
                 )
             status_rows = build_status_board(
                 mode,
@@ -3291,7 +3311,7 @@ if active_job:
                 st.markdown(f"- **{label}:** `{value}`")
             final_user_approval = st.checkbox(
                 "I approve this manufacturing plan and want CipherSlice to release this job",
-                key=f"approve_{artifact_hash}",
+                key=approval_key,
             )
             status_rows = build_status_board(
                 mode,
@@ -3352,10 +3372,10 @@ if active_job:
                 )
                 st.markdown("**SD card operator checklist**")
                 st.markdown("- Confirm the printer model and plastic profile match the exported plan.")
-                st.markdown("- Label the artifact clearly before copying it to removable media.")
+                st.markdown("- Label the print file clearly before copying it to removable media.")
                 st.markdown("- Review temperatures, supports, and scale one last time on the printer screen before printing.")
             stream_triggered = st.button(
-                "Send to Secure Printer Link",
+                "Send to Approved Printer Link",
                 use_container_width=True,
                 key=f"hardware_stream_{artifact_hash}",
                 disabled=not (release_allowed and final_user_approval and delivery_mode == "Secure local connector"),
@@ -3363,7 +3383,7 @@ if active_job:
             if delivery_mode != "Secure local connector":
                 st.caption("Direct secure printer handoff is available only when `Delivery Mode` is set to `Secure local connector`.")
             if stream_triggered:
-                with st.status("Initializing encrypted tunnel...", expanded=True) as hardware_status:
+                with st.status("Preparing secure printer link...", expanded=True) as hardware_status:
                     time.sleep(2)
                     st.markdown(
                         "Checking for a local `CipherBridge` connector or approved printer relay so the website can hand "
@@ -3444,7 +3464,7 @@ if active_job:
         if encrypted_artifact:
             encrypted_payload = textwrap.dedent(
                 f"""
-                CipherSlice Encrypted Artifact
+                CipherSlice Encrypted Print File
                 source_file={filename}
                 printer={printer}
                 filament={filament}
@@ -3453,7 +3473,7 @@ if active_job:
                 """
             ).strip()
             st.download_button(
-                "Download Encrypted Artifact",
+                "Download Encrypted Print File",
                 data=encrypted_payload,
                 file_name=f"{file_stem}_cipher_vault.enc.txt",
                 mime="text/plain",
@@ -3467,7 +3487,7 @@ if active_job:
                 ),
             )
             if mode == "Reliable Print Mode" and delivery_mode == "SD card export":
-                st.caption("Encrypted artifact export is disabled for SD card delivery because removable media breaks the secure stream model.")
+                st.caption("Encrypted print-file export is disabled for SD card delivery because removable media breaks the secure stream model.")
         elif wants_encryption and not encryption_passphrase:
             st.caption("Add an encryption passphrase if you want Cipher Vault to produce an encrypted download.")
 
@@ -3571,7 +3591,7 @@ if active_job:
             for agent_name, score in consensus_scores.items():
                 st.markdown(f"- **{agent_name}:** `{score * 100:.1f}%`")
             if not slicer_path and mode == "Reliable Print Mode":
-                st.caption("Artifact confidence is capped in this environment because the final slicing engine is missing.")
+                st.caption("Print-file confidence is capped in this environment because the final slicing engine is missing.")
             if objections:
                 st.markdown("**Review blockers**")
                 for reason in objections:
