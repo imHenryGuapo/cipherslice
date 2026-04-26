@@ -16,6 +16,8 @@ from urllib.request import Request, urlopen
 from base64 import urlsafe_b64encode
 
 import streamlit as st
+import streamlit.components.v1 as components
+import numpy as np
 
 try:
     from cryptography.fernet import Fernet
@@ -435,6 +437,147 @@ def summarize_fit(mesh_analysis: dict[str, object] | None, printer_profile: dict
     return "Exceeds build volume", "At least one part dimension is larger than the selected printer volume."
 
 
+def build_orientation_candidates(
+    extents: list[float] | tuple[float, float, float] | None,
+    printer_profile: dict[str, object],
+    mesh_analysis: dict[str, object] | None = None,
+) -> list[dict[str, object]]:
+    if not extents:
+        return []
+
+    x_dim, y_dim, z_dim = [float(value) for value in extents]
+    build_x, build_y, build_z = parse_bed_dimensions(printer_profile)
+    geometry_profile = str((mesh_analysis or {}).get("geometry_profile", "Unknown"))
+    risk_level = str((mesh_analysis or {}).get("risk_level", "Unknown"))
+    detail_risk = str((mesh_analysis or {}).get("detail_risk", "Unknown"))
+
+    candidates = [
+        {
+            "label": "As loaded",
+            "dims": (x_dim, y_dim, z_dim),
+            "summary": "Keeps the uploaded orientation exactly as it arrived.",
+        },
+        {
+            "label": "Lay flattest face",
+            "dims": tuple(sorted([x_dim, y_dim, z_dim], reverse=True)[:2] + [min(x_dim, y_dim, z_dim)]),
+            "summary": "Pushes the broadest faces onto the bed to improve first-layer stability.",
+        },
+        {
+            "label": "Balanced side",
+            "dims": (max(x_dim, y_dim, z_dim), min(x_dim, y_dim, z_dim), sorted([x_dim, y_dim, z_dim])[1]),
+            "summary": "Trades a little more height for better side support on some parts.",
+        },
+    ]
+
+    evaluated: list[dict[str, object]] = []
+    for candidate in candidates:
+        part_x, part_y, part_z = candidate["dims"]
+        fits_xy, fit_detail = footprint_fits_printer(part_x, part_y, printer_profile)
+        fits = bool(fits_xy and part_z <= build_z)
+        contact_area = part_x * part_y
+        base_fill = min(100.0, (contact_area / max(build_x * build_y, 1)) * 100)
+        height_use = min(100.0, (part_z / max(build_z, 1)) * 100)
+        stability_score = contact_area / max(part_z, 1)
+        support_pressure = 0
+        if height_use > 70:
+            support_pressure += 2
+        elif height_use > 45:
+            support_pressure += 1
+        if base_fill < 8:
+            support_pressure += 2
+        elif base_fill < 15:
+            support_pressure += 1
+        if geometry_profile in {"Tall / slender", "Dense detail"}:
+            support_pressure += 1
+        if risk_level == "High":
+            support_pressure += 1
+        score = stability_score - (support_pressure * 22)
+        if not fits:
+            score -= 1000
+        if detail_risk == "Very small features" and candidate["label"] == "Lay flattest face":
+            score -= 8
+        recommendation = "Good default"
+        if support_pressure >= 4:
+            recommendation = "High support pressure"
+        elif base_fill < 10:
+            recommendation = "Small bed contact"
+        elif height_use < 40 and base_fill > 18:
+            recommendation = "Strong first-layer posture"
+        evaluated.append(
+            {
+                **candidate,
+                "fits": fits,
+                "fit_detail": fit_detail,
+                "contact_area": contact_area,
+                "bed_use": round(base_fill, 1),
+                "height_use": round(height_use, 1),
+                "support_pressure": support_pressure,
+                "score": round(score, 2),
+                "recommendation": recommendation,
+            }
+        )
+
+    best_score = max(candidate["score"] for candidate in evaluated)
+    for candidate in evaluated:
+        candidate["recommended"] = bool(candidate["score"] == best_score)
+        candidate["tradeoff"] = (
+            "Best contact patch and easiest first layer."
+            if candidate["recommended"]
+            else (
+                "Safer for some features, but likely taller or more support-hungry."
+                if candidate["support_pressure"] >= 3
+                else "Balanced alternative if you need a different face or seam placement."
+            )
+        )
+    return evaluated
+
+
+def build_orientation_candidate_preview(candidates: list[dict[str, object]]) -> str:
+    if not candidates:
+        return "<div class='shape-preview-empty'>Orientation candidates appear after CipherSlice reads the model.</div>"
+
+    cards: list[str] = []
+    for candidate in candidates:
+        part_x, part_y, part_z = candidate["dims"]
+        max_dim = max(part_x, part_y, part_z, 1)
+        scale = 72 / max_dim
+        front_w = max(14, part_x * scale)
+        front_h = max(14, part_z * scale)
+        top_w = max(14, part_x * scale)
+        top_h = max(14, part_y * scale)
+        front_x = 30
+        front_y = 58 - (front_h / 2)
+        top_x = front_x + 12
+        top_y = front_y - max(8, top_h * 0.35)
+        right_x = front_x + front_w
+        right_y = front_y - max(6, top_h * 0.2)
+        badge = "<div class='orientation-badge'>Recommended</div>" if candidate.get("recommended") else ""
+        fit_color = "#8fe6cf" if candidate["fits"] else "#ffab91"
+        fit_fill = "rgba(90,207,171,0.18)" if candidate["fits"] else "rgba(255,140,120,0.18)"
+        cards.append(
+            f"""
+            <div class="orientation-card{' orientation-card-recommended' if candidate.get('recommended') else ''}">
+                {badge}
+                <div class="orientation-title">{candidate['label']}</div>
+                <div class="orientation-copy">{candidate['summary']}</div>
+                <svg viewBox="0 0 170 128" class="orientation-svg" aria-hidden="true">
+                    <rect x="16" y="88" width="138" height="20" rx="10" fill="rgba(8,22,36,0.9)" stroke="rgba(104,144,177,0.28)" />
+                    <polygon points="{top_x:.1f},{top_y:.1f} {top_x + top_w:.1f},{top_y:.1f} {right_x + top_w * 0.18:.1f},{right_y:.1f} {front_x + top_w * 0.18:.1f},{right_y:.1f}"
+                        fill="{fit_fill}" stroke="{fit_color}" stroke-width="1.6"/>
+                    <rect x="{front_x:.1f}" y="{front_y:.1f}" width="{front_w:.1f}" height="{front_h:.1f}" rx="8"
+                        fill="{fit_fill}" stroke="{fit_color}" stroke-width="1.9"/>
+                    <polygon points="{right_x:.1f},{front_y:.1f} {right_x + top_w * 0.18:.1f},{right_y:.1f} {right_x + top_w * 0.18:.1f},{right_y + front_h:.1f} {right_x:.1f},{front_y + front_h:.1f}"
+                        fill="rgba(90,207,171,0.12)" stroke="{fit_color}" stroke-width="1.4"/>
+                </svg>
+                <div class="orientation-meta">Bed use: {candidate['bed_use']:.0f}% | Height: {candidate['height_use']:.0f}%</div>
+                <div class="orientation-meta">Support pressure: {candidate['support_pressure']} | {candidate['recommendation']}</div>
+                <div class="orientation-copy">{candidate['tradeoff']}</div>
+            </div>
+            """
+        )
+    return "<div class='orientation-grid'>" + "".join(textwrap.dedent(card).strip() for card in cards) + "</div>"
+
+
 def build_bed_preview_svg(mesh_analysis: dict[str, object] | None, printer_profile: dict[str, object]) -> str:
     bed_x, bed_y, _ = parse_bed_dimensions(printer_profile)
     svg_width = 320
@@ -455,15 +598,24 @@ def build_bed_preview_svg(mesh_analysis: dict[str, object] | None, printer_profi
         part_draw_height = min(part_draw_height, bed_draw_height)
         part_left = padding + ((bed_draw_width - part_draw_width) / 2)
         part_top = padding + ((bed_draw_height - part_draw_height) / 2)
-        fits = part_x <= bed_x and part_y <= bed_y
+        fits, _ = footprint_fits_printer(part_x, part_y, printer_profile)
         status_label = "Fits on current bed" if fits else "Footprint exceeds bed"
         status_color = "#73e8c1" if fits else "#ffd39f"
         fill = "rgba(90, 207, 171, 0.28)" if fits else "rgba(255, 140, 120, 0.28)"
         stroke = "#73e8c1" if fits else "#ffab91"
-        part_svg = (
-            f'<rect x="{part_left:.1f}" y="{part_top:.1f}" width="{part_draw_width:.1f}" height="{part_draw_height:.1f}" '
-            f'rx="12" ry="12" fill="{fill}" stroke="{stroke}" stroke-width="2.5" />'
-        )
+        if str(printer_profile.get("bed_shape_type", "Rectangular")) == "Circular":
+            radius = min(bed_draw_width, bed_draw_height) / 2
+            center_x = padding + bed_draw_width / 2
+            center_y = padding + bed_draw_height / 2
+            part_svg = (
+                f'<ellipse cx="{center_x:.1f}" cy="{center_y:.1f}" rx="{part_draw_width/2:.1f}" ry="{part_draw_height/2:.1f}" '
+                f'fill="{fill}" stroke="{stroke}" stroke-width="2.5" />'
+            )
+        else:
+            part_svg = (
+                f'<rect x="{part_left:.1f}" y="{part_top:.1f}" width="{part_draw_width:.1f}" height="{part_draw_height:.1f}" '
+                f'rx="12" ry="12" fill="{fill}" stroke="{stroke}" stroke-width="2.5" />'
+            )
 
     return textwrap.dedent(
         f"""
@@ -533,6 +685,240 @@ def build_model_shape_preview_svg(mesh_analysis: dict[str, object] | None) -> st
     return "<div class='shape-preview-grid'>" + "".join(textwrap.dedent(card).strip() for card in cards) + "</div>"
 
 
+def build_preview_mesh_data(
+    mesh,
+    scale_factor: float,
+    max_faces: int = 2800,
+) -> dict[str, object] | None:
+    try:
+        vertices = np.asarray(mesh.vertices, dtype=float)
+        faces = np.asarray(mesh.faces, dtype=int)
+        if len(vertices) == 0 or len(faces) == 0:
+            return None
+        if len(faces) > max_faces:
+            sample_idx = np.linspace(0, len(faces) - 1, max_faces, dtype=int)
+            sampled_faces = faces[sample_idx]
+            unique_vertices, inverse = np.unique(sampled_faces.reshape(-1), return_inverse=True)
+            vertices = vertices[unique_vertices]
+            faces = inverse.reshape(-1, 3)
+        scaled_vertices = vertices * float(scale_factor or 1.0)
+        center = scaled_vertices.mean(axis=0)
+        centered = scaled_vertices - center
+        max_abs = float(np.max(np.abs(centered))) if centered.size else 1.0
+        if max_abs <= 0:
+            max_abs = 1.0
+        normalized = np.round((centered / max_abs) * 42.0, 3)
+        return {
+            "vertices": normalized.tolist(),
+            "faces": faces.tolist(),
+            "scale_mm": round(max_abs, 3),
+        }
+    except Exception:
+        return None
+
+
+def render_interactive_mesh_preview(
+    mesh_analysis: dict[str, object] | None,
+    printer_profile: dict[str, object],
+    camera_preset: str,
+    orientation_label: str,
+    seam_position: str,
+    component_key: str,
+) -> None:
+    preview_mesh = (mesh_analysis or {}).get("preview_mesh")
+    if not preview_mesh:
+        st.info("Interactive 3D preview appears after CipherSlice can read the mesh geometry.")
+        return
+
+    camera_map = {
+        "Isometric": [88, 68, 88],
+        "Top": [0, 138, 0.1],
+        "Front": [0, 18, 138],
+        "Side": [138, 20, 0.1],
+    }
+    orientation_rotation_map = {
+        "As loaded": [0.0, 0.0, 0.0],
+        "Lay flattest face": [-1.5708, 0.0, 0.0],
+        "Balanced side": [0.0, 0.0, 1.5708],
+    }
+    bed_x, bed_y, _ = parse_bed_dimensions(printer_profile)
+    extents = (mesh_analysis or {}).get("scaled_extents_mm") or (mesh_analysis or {}).get("extents_mm") or [100, 100, 100]
+    max_part_dim = max(float(value) for value in extents) if extents else 100.0
+    plane_scale = 84.0 / max(max_part_dim, 1.0)
+    plane_x = max(36.0, min(138.0, bed_x * plane_scale))
+    plane_y = max(36.0, min(138.0, bed_y * plane_scale))
+    is_circular = str(printer_profile.get("bed_shape_type", "Rectangular")) == "Circular"
+    mesh_json = json.dumps(preview_mesh)
+    camera_json = json.dumps(camera_map.get(camera_preset, camera_map["Isometric"]))
+    rotation_json = json.dumps(orientation_rotation_map.get(orientation_label, orientation_rotation_map["As loaded"]))
+    seam_json = json.dumps(seam_position)
+    height_use = float((mesh_analysis or {}).get("height_use_percent") or 0.0)
+    bed_use = float((mesh_analysis or {}).get("bed_use_percent") or 0.0)
+    unsupported_risk = str((mesh_analysis or {}).get("unsupported_risk", "Unknown"))
+    bridge_risk = str((mesh_analysis or {}).get("bridge_risk", "Unknown"))
+    support_hotspots = unsupported_risk in {"Widespread unsupported surfaces", "Localized unsupported pockets"} or bridge_risk in {"Bridge-heavy geometry", "Some bridging pressure"}
+    support_hotspot_json = json.dumps(bool(support_hotspots))
+    html = f"""
+    <div style="background:rgba(8,23,37,0.88);border:1px solid rgba(104,144,177,0.18);border-radius:18px;padding:0.7rem 0.7rem 0.4rem;">
+      <div style="color:#f4f8fb;font-weight:700;margin-bottom:0.35rem;">Interactive 3D Preview</div>
+      <div style="color:#b7c8d5;font-size:0.9rem;line-height:1.45;margin-bottom:0.55rem;">
+        Drag to orbit, scroll to zoom, and inspect the part against a simplified build surface.
+      </div>
+      <div id="{component_key}" style="width:100%;height:420px;border-radius:16px;overflow:hidden;"></div>
+    </div>
+    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+      (function() {{
+        const host = document.getElementById("{component_key}");
+        if (!host || host.dataset.loaded === "1") return;
+        host.dataset.loaded = "1";
+        const meshData = {mesh_json};
+        const cameraStart = {camera_json};
+        const partRotation = {rotation_json};
+        const seamMode = {seam_json};
+        const showSupportHotspots = {support_hotspot_json};
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x08131f);
+
+        const camera = new THREE.PerspectiveCamera(42, host.clientWidth / host.clientHeight, 0.1, 1000);
+        camera.position.set(cameraStart[0], cameraStart[1], cameraStart[2]);
+
+        const renderer = new THREE.WebGLRenderer({{ antialias: true, alpha: true }});
+        renderer.setSize(host.clientWidth, host.clientHeight);
+        renderer.setPixelRatio(window.devicePixelRatio || 1);
+        host.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.08;
+        controls.target.set(0, 10, 0);
+
+        const ambient = new THREE.AmbientLight(0xffffff, 1.1);
+        scene.add(ambient);
+        const keyLight = new THREE.DirectionalLight(0x9cf0d4, 1.25);
+        keyLight.position.set(65, 90, 70);
+        scene.add(keyLight);
+        const rimLight = new THREE.DirectionalLight(0x4b8cff, 0.7);
+        rimLight.position.set(-60, 35, -80);
+        scene.add(rimLight);
+
+        const planeGroup = new THREE.Group();
+        const bedUse = {bed_use:.2f};
+        const planeColor = bedUse > 70 ? 0x3b221f : (bedUse > 45 ? 0x213244 : 0x0c1f31);
+        const planeMaterial = new THREE.MeshStandardMaterial({{ color: planeColor, roughness: 0.9, metalness: 0.08 }});
+        let bedMesh;
+        if ({str(is_circular).lower()}) {{
+          bedMesh = new THREE.Mesh(new THREE.CylinderGeometry({plane_x/2:.2f}, {plane_x/2:.2f}, 2, 64), planeMaterial);
+          bedMesh.rotation.x = Math.PI / 2;
+        }} else {{
+          bedMesh = new THREE.Mesh(new THREE.BoxGeometry({plane_x:.2f}, 2, {plane_y:.2f}), planeMaterial);
+        }}
+        planeGroup.add(bedMesh);
+        const edge = new THREE.LineSegments(
+          new THREE.EdgesGeometry(bedMesh.geometry),
+          new THREE.LineBasicMaterial({{ color: 0x5dd8b7, transparent: true, opacity: 0.55 }})
+        );
+        edge.rotation.copy(bedMesh.rotation);
+        planeGroup.add(edge);
+        scene.add(planeGroup);
+
+        const grid = new THREE.GridHelper(Math.max({plane_x:.2f}, {plane_y:.2f}) * 0.98, 14, 0x2c4e67, 0x173246);
+        grid.position.y = 1.1;
+        scene.add(grid);
+
+        const verts = new Float32Array(meshData.vertices.flat());
+        const faceFlat = meshData.faces.flat();
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(verts, 3));
+        geometry.setIndex(faceFlat);
+        geometry.computeVertexNormals();
+        const material = new THREE.MeshStandardMaterial({{
+          color: 0x5dd8b7,
+          roughness: 0.45,
+          metalness: 0.16,
+          transparent: true,
+          opacity: 0.96,
+          side: THREE.DoubleSide
+        }});
+        const partMesh = new THREE.Mesh(geometry, material);
+        partMesh.position.y = 14;
+        partMesh.rotation.set(partRotation[0], partRotation[1], partRotation[2]);
+        scene.add(partMesh);
+
+        const wire = new THREE.LineSegments(
+          new THREE.EdgesGeometry(geometry),
+          new THREE.LineBasicMaterial({{ color: 0xdffcf2, transparent: true, opacity: 0.18 }})
+        );
+        wire.position.copy(partMesh.position);
+        wire.rotation.copy(partMesh.rotation);
+        scene.add(wire);
+
+        const box = new THREE.Box3().setFromObject(partMesh);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+        const center = new THREE.Vector3();
+        box.getCenter(center);
+
+        if (showSupportHotspots) {{
+          const hotspotMaterial = new THREE.MeshBasicMaterial({{ color: 0xffb347, transparent: true, opacity: 0.85 }});
+          const hotspotGeometry = new THREE.SphereGeometry(2.1, 18, 18);
+          const hotspotPositions = [
+            [center.x - size.x * 0.22, box.min.y + size.y * 0.12, center.z + size.z * 0.18],
+            [center.x + size.x * 0.24, box.min.y + size.y * 0.24, center.z - size.z * 0.2],
+          ];
+          hotspotPositions.forEach((pos) => {{
+            const marker = new THREE.Mesh(hotspotGeometry, hotspotMaterial);
+            marker.position.set(pos[0], pos[1], pos[2]);
+            scene.add(marker);
+          }});
+        }}
+
+        const seamLineMaterial = new THREE.LineBasicMaterial({{ color: 0x8fd3ff, transparent: true, opacity: 0.78 }});
+        const seamLineGeometry = new THREE.BufferGeometry();
+        let seamX = center.x;
+        let seamZ = center.z;
+        if (seamMode === "Rear") seamZ = box.max.z;
+        if (seamMode === "Front") seamZ = box.min.z;
+        if (seamMode === "Left") seamX = box.min.x;
+        if (seamMode === "Right") seamX = box.max.x;
+        seamLineGeometry.setFromPoints([
+          new THREE.Vector3(seamX, box.min.y, seamZ),
+          new THREE.Vector3(seamX, box.max.y, seamZ)
+        ]);
+        const seamLine = new THREE.Line(seamLineGeometry, seamLineMaterial);
+        scene.add(seamLine);
+
+        if ({height_use:.2f} > 70) {{
+          const pillarGeo = new THREE.CylinderGeometry(1.1, 1.1, size.y + 18, 18);
+          const pillarMat = new THREE.MeshBasicMaterial({{ color: 0xff7f7f, transparent: true, opacity: 0.28 }});
+          const pillar = new THREE.Mesh(pillarGeo, pillarMat);
+          pillar.position.set(center.x, center.y, center.z);
+          scene.add(pillar);
+        }}
+
+        const resize = () => {{
+          const width = host.clientWidth || 640;
+          const height = host.clientHeight || 420;
+          camera.aspect = width / height;
+          camera.updateProjectionMatrix();
+          renderer.setSize(width, height);
+        }};
+        window.addEventListener("resize", resize);
+        resize();
+
+        const animate = () => {{
+          requestAnimationFrame(animate);
+          controls.update();
+          renderer.render(scene, camera);
+        }};
+        animate();
+      }})();
+    </script>
+    """
+    components.html(html, height=450)
+
+
 def build_mesh_preview_metrics(
     mesh_analysis: dict[str, object] | None,
     printer_profile: dict[str, object],
@@ -554,6 +940,8 @@ def build_mesh_preview_metrics(
     return [
         ("Bed use", f"{bed_use:.0f}%"),
         ("Height use", f"{height_use:.0f}%"),
+        ("First-layer contact", f"{float(mesh_analysis.get('first_layer_contact_percent', 0)):.0f}%"
+         if mesh_analysis.get("first_layer_contact_percent") is not None else "Pending"),
         ("Mesh health", mesh_health),
         ("Risk", risk),
     ]
@@ -580,7 +968,8 @@ def build_geometry_intelligence(mesh_analysis: dict[str, object] | None, printer
     fit_margin = mesh_analysis.get("fit_margin_mm")
     if extents:
         part_x, part_y, part_z = extents
-        fit_state = "Fits" if part_x <= bed_x and part_y <= bed_y and part_z <= bed_z else "Exceeds printer"
+        fits_xy, fit_detail = footprint_fits_printer(part_x, part_y, printer_profile)
+        fit_state = "Fits" if fits_xy and part_z <= bed_z else f"Needs review ({fit_detail})"
     return [
         ("Risk level", str(mesh_analysis.get("risk_level", "Unknown"))),
         ("Geometry profile", str(mesh_analysis.get("geometry_profile", "Unknown"))),
@@ -592,7 +981,15 @@ def build_geometry_intelligence(mesh_analysis: dict[str, object] | None, printer
         ("Height use", f"{height_use}%" if height_use is not None else "Pending"),
         ("Fit margin", f"{fit_margin} mm" if fit_margin is not None else "Pending"),
         ("Detail risk", str(mesh_analysis.get("detail_risk", "Unknown"))),
+        ("Thin-wall risk", str(mesh_analysis.get("thin_wall_risk", "Unknown"))),
+        ("Estimated wall width", str(mesh_analysis.get("wall_thickness_estimate", "Unknown"))),
         ("Warp risk", str(mesh_analysis.get("warp_risk", "Unknown"))),
+        ("Unsupported risk", str(mesh_analysis.get("unsupported_risk", "Unknown"))),
+        ("Bridge risk", str(mesh_analysis.get("bridge_risk", "Unknown"))),
+        ("Hole / opening risk", str(mesh_analysis.get("hole_risk", "Unknown"))),
+        ("Overhang scope", str(mesh_analysis.get("overhang_scope", "Unknown"))),
+        ("Feature survivability", str(mesh_analysis.get("survivability_hint", "Unknown"))),
+        ("Fragile zones", str(mesh_analysis.get("fragile_zone_summary", "Unknown"))),
         ("Fit against printer", fit_state),
     ]
 
@@ -1244,10 +1641,12 @@ def reset_live_plan_state(
     filament: str,
     printer_profile: dict[str, object],
 ) -> None:
+    base_speed = int(recommended_plan["print_speed"])
+    base_layer = float(recommended_plan["layer_height"])
     st.session_state[f"edit_quality_{artifact_hash}"] = quality_profile
     st.session_state[f"edit_goal_{artifact_hash}"] = print_goal
-    st.session_state[f"edit_layer_{artifact_hash}"] = float(recommended_plan["layer_height"])
-    st.session_state[f"edit_speed_{artifact_hash}"] = int(recommended_plan["print_speed"])
+    st.session_state[f"edit_layer_{artifact_hash}"] = base_layer
+    st.session_state[f"edit_speed_{artifact_hash}"] = base_speed
     st.session_state[f"edit_support_{artifact_hash}"] = support_strategy
     st.session_state[f"edit_adhesion_{artifact_hash}"] = adhesion_strategy
     st.session_state[f"edit_infill_{artifact_hash}"] = int(recommended_plan["infill_percent"])
@@ -1264,6 +1663,364 @@ def reset_live_plan_state(
     st.session_state[f"edit_retraction_{artifact_hash}"] = float(recommended_plan.get("retraction_length", 1.2))
     st.session_state[f"edit_acceleration_{artifact_hash}"] = int(recommended_plan.get("acceleration", 3000))
     st.session_state[f"edit_seam_{artifact_hash}"] = str(recommended_plan.get("seam_position", "Rear"))
+    st.session_state[f"edit_outer_wall_speed_{artifact_hash}"] = int(recommended_plan.get("outer_wall_speed", max(15, int(base_speed * 0.55))))
+    st.session_state[f"edit_inner_wall_speed_{artifact_hash}"] = int(recommended_plan.get("inner_wall_speed", max(18, int(base_speed * 0.82))))
+    st.session_state[f"edit_travel_speed_{artifact_hash}"] = int(recommended_plan.get("travel_speed", min(400, int(base_speed * 2.2))))
+    st.session_state[f"edit_infill_pattern_{artifact_hash}"] = str(recommended_plan.get("infill_pattern", "Gyroid"))
+    st.session_state[f"edit_support_interface_{artifact_hash}"] = bool(recommended_plan.get("support_interface", recommended_plan.get("support_enabled", False)))
+    st.session_state[f"edit_support_pattern_{artifact_hash}"] = str(recommended_plan.get("support_pattern", "Lines"))
+    st.session_state[f"edit_brim_width_{artifact_hash}"] = float(recommended_plan.get("brim_width", 6.0 if recommended_plan.get("adhesion") == "Brim" else 0.0))
+    st.session_state[f"edit_skirt_loops_{artifact_hash}"] = int(recommended_plan.get("skirt_loops", 2))
+    st.session_state[f"edit_first_layer_height_{artifact_hash}"] = float(recommended_plan.get("first_layer_height", max(base_layer, round(base_layer * 1.4, 2))))
+    st.session_state[f"edit_first_layer_speed_{artifact_hash}"] = int(recommended_plan.get("first_layer_speed", max(15, int(base_speed * 0.45))))
+    st.session_state[f"edit_first_layer_flow_{artifact_hash}"] = int(recommended_plan.get("first_layer_flow", 100))
+    st.session_state[f"edit_jerk_{artifact_hash}"] = int(recommended_plan.get("jerk_control", 8))
+    st.session_state[f"edit_stability_{artifact_hash}"] = str(recommended_plan.get("stability_mode", "Balanced"))
+    st.session_state[f"edit_profile_preset_{artifact_hash}"] = str(recommended_plan.get("profile_preset", "Recommended"))
+    st.session_state[f"edit_restore_point_{artifact_hash}"] = "Recommended baseline"
+
+
+def build_tuning_preset_values(
+    preset_name: str,
+    recommended_plan: dict[str, str | float | int | bool],
+    printer_profile: dict[str, object],
+) -> dict[str, str | float | int | bool]:
+    base_speed = int(recommended_plan["print_speed"])
+    base_layer = float(recommended_plan["layer_height"])
+    nozzle_diameter = float(printer_profile.get("nozzle_diameter", 0.4))
+    values: dict[str, str | float | int | bool] = {
+        "layer_height": base_layer,
+        "print_speed": base_speed,
+        "infill_percent": int(recommended_plan["infill_percent"]),
+        "wall_loops": int(recommended_plan["wall_loops"]),
+        "outer_wall_speed": int(recommended_plan.get("outer_wall_speed", max(15, int(base_speed * 0.55)))),
+        "inner_wall_speed": int(recommended_plan.get("inner_wall_speed", max(18, int(base_speed * 0.82)))),
+        "travel_speed": int(recommended_plan.get("travel_speed", min(400, int(base_speed * 2.2)))),
+        "top_layers": int(recommended_plan.get("top_layers", 4)),
+        "bottom_layers": int(recommended_plan.get("bottom_layers", 4)),
+        "flow_multiplier": int(recommended_plan.get("flow_multiplier", 100)),
+        "first_layer_height": float(recommended_plan.get("first_layer_height", max(base_layer, round(base_layer * 1.4, 2)))),
+        "first_layer_speed": int(recommended_plan.get("first_layer_speed", max(15, int(base_speed * 0.45)))),
+        "first_layer_flow": int(recommended_plan.get("first_layer_flow", 100)),
+        "support_density": int(recommended_plan.get("support_density", 24)),
+        "support_interface": bool(recommended_plan.get("support_interface", recommended_plan.get("support_enabled", False))),
+        "support_pattern": str(recommended_plan.get("support_pattern", "Lines")),
+        "infill_pattern": str(recommended_plan.get("infill_pattern", "Gyroid")),
+        "brim_width": float(recommended_plan.get("brim_width", 6.0 if recommended_plan.get("adhesion") == "Brim" else 0.0)),
+        "skirt_loops": int(recommended_plan.get("skirt_loops", 2)),
+        "retraction_length": float(recommended_plan.get("retraction_length", 1.2)),
+        "acceleration": int(recommended_plan.get("acceleration", 3000)),
+        "jerk_control": int(recommended_plan.get("jerk_control", 8)),
+        "seam_position": str(recommended_plan.get("seam_position", "Rear")),
+        "stability_mode": str(recommended_plan.get("stability_mode", "Balanced")),
+    }
+    if preset_name == "Strength-first":
+        values.update(
+            {
+                "layer_height": round(max(0.12, base_layer), 2),
+                "print_speed": max(25, int(base_speed * 0.9)),
+                "infill_percent": min(55, max(values["infill_percent"], 35)),
+                "wall_loops": min(6, max(values["wall_loops"], 4)),
+                "top_layers": min(10, max(values["top_layers"], 5)),
+                "bottom_layers": min(10, max(values["bottom_layers"], 5)),
+                "support_density": max(values["support_density"], 28),
+                "support_interface": True,
+                "infill_pattern": "Gyroid",
+                "stability_mode": "Stable",
+                "acceleration": min(values["acceleration"], 2600),
+            }
+        )
+    elif preset_name == "Quality-first":
+        values.update(
+            {
+                "layer_height": round(max(0.08, min(values["layer_height"], max(0.08, nozzle_diameter * 0.3))), 2),
+                "print_speed": max(18, int(base_speed * 0.72)),
+                "outer_wall_speed": max(12, int(base_speed * 0.4)),
+                "inner_wall_speed": max(15, int(base_speed * 0.62)),
+                "travel_speed": max(80, int(values["travel_speed"] * 0.85)),
+                "top_layers": min(12, max(values["top_layers"], 6)),
+                "seam_position": "Rear",
+                "stability_mode": "Surface-first",
+                "acceleration": min(values["acceleration"], 2200),
+            }
+        )
+    elif preset_name == "Speed-first":
+        values.update(
+            {
+                "layer_height": round(min(max(0.2, values["layer_height"]), max(0.2, nozzle_diameter * 0.6)), 2),
+                "print_speed": min(280, max(35, int(base_speed * 1.18))),
+                "outer_wall_speed": min(180, max(20, int(base_speed * 0.8))),
+                "inner_wall_speed": min(220, max(28, int(base_speed * 1.08))),
+                "travel_speed": min(450, max(120, int(values["travel_speed"] * 1.08))),
+                "infill_pattern": "Grid",
+                "support_interface": False,
+                "stability_mode": "Fast",
+                "acceleration": min(6000, max(values["acceleration"], 3600)),
+            }
+        )
+    elif preset_name == "Prototype-first":
+        values.update(
+            {
+                "layer_height": round(min(max(0.2, values["layer_height"]), max(0.24, nozzle_diameter * 0.7)), 2),
+                "print_speed": min(250, max(30, int(base_speed * 1.08))),
+                "infill_percent": min(values["infill_percent"], 12),
+                "wall_loops": min(values["wall_loops"], 2),
+                "top_layers": min(values["top_layers"], 3),
+                "bottom_layers": min(values["bottom_layers"], 3),
+                "support_density": min(values["support_density"], 15),
+                "infill_pattern": "Lines",
+                "stability_mode": "Prototype",
+            }
+        )
+    return values
+
+
+def apply_tuning_preset_to_state(
+    artifact_hash: str,
+    preset_name: str,
+    recommended_plan: dict[str, str | float | int | bool],
+    printer_profile: dict[str, object],
+) -> None:
+    values = build_tuning_preset_values(preset_name, recommended_plan, printer_profile)
+    state_map = {
+        "layer_height": f"edit_layer_{artifact_hash}",
+        "print_speed": f"edit_speed_{artifact_hash}",
+        "infill_percent": f"edit_infill_{artifact_hash}",
+        "wall_loops": f"edit_walls_{artifact_hash}",
+        "outer_wall_speed": f"edit_outer_wall_speed_{artifact_hash}",
+        "inner_wall_speed": f"edit_inner_wall_speed_{artifact_hash}",
+        "travel_speed": f"edit_travel_speed_{artifact_hash}",
+        "top_layers": f"edit_top_layers_{artifact_hash}",
+        "bottom_layers": f"edit_bottom_layers_{artifact_hash}",
+        "flow_multiplier": f"edit_flow_{artifact_hash}",
+        "first_layer_height": f"edit_first_layer_height_{artifact_hash}",
+        "first_layer_speed": f"edit_first_layer_speed_{artifact_hash}",
+        "first_layer_flow": f"edit_first_layer_flow_{artifact_hash}",
+        "support_density": f"edit_support_density_{artifact_hash}",
+        "support_interface": f"edit_support_interface_{artifact_hash}",
+        "support_pattern": f"edit_support_pattern_{artifact_hash}",
+        "infill_pattern": f"edit_infill_pattern_{artifact_hash}",
+        "brim_width": f"edit_brim_width_{artifact_hash}",
+        "skirt_loops": f"edit_skirt_loops_{artifact_hash}",
+        "retraction_length": f"edit_retraction_{artifact_hash}",
+        "acceleration": f"edit_acceleration_{artifact_hash}",
+        "jerk_control": f"edit_jerk_{artifact_hash}",
+        "seam_position": f"edit_seam_{artifact_hash}",
+        "stability_mode": f"edit_stability_{artifact_hash}",
+    }
+    for field, state_key in state_map.items():
+        st.session_state[state_key] = values[field]
+    st.session_state[f"edit_profile_preset_{artifact_hash}"] = preset_name
+
+
+def extract_plan_controls(plan: dict[str, str | float | int | bool]) -> dict[str, str | float | int | bool]:
+    return {
+        "layer_height": float(plan.get("layer_height", 0.2)),
+        "print_speed": int(plan.get("print_speed", 50)),
+        "infill_percent": int(plan.get("infill_percent", 20)),
+        "wall_loops": int(plan.get("wall_loops", 3)),
+        "nozzle_temp": int(plan.get("nozzle_temp", 220)),
+        "bed_temp": int(plan.get("bed_temp", 60)),
+        "flow_multiplier": int(plan.get("flow_multiplier", 100)),
+        "support_density": int(plan.get("support_density", 24)),
+        "top_layers": int(plan.get("top_layers", 4)),
+        "bottom_layers": int(plan.get("bottom_layers", 4)),
+        "retraction_length": float(plan.get("retraction_length", 1.2)),
+        "acceleration": int(plan.get("acceleration", 3000)),
+        "seam_position": str(plan.get("seam_position", "Rear")),
+        "gcode_flavor": str(plan.get("gcode_flavor", "Unknown")),
+        "outer_wall_speed": int(plan.get("outer_wall_speed", max(15, int(int(plan.get("print_speed", 50)) * 0.55)))),
+        "inner_wall_speed": int(plan.get("inner_wall_speed", max(18, int(int(plan.get("print_speed", 50)) * 0.82)))),
+        "travel_speed": int(plan.get("travel_speed", min(400, int(int(plan.get("print_speed", 50)) * 2.2)))),
+        "infill_pattern": str(plan.get("infill_pattern", "Gyroid")),
+        "support_interface": bool(plan.get("support_interface", plan.get("support_enabled", False))),
+        "support_pattern": str(plan.get("support_pattern", "Lines")),
+        "brim_width": float(plan.get("brim_width", 6.0 if plan.get("adhesion") == "Brim" else 0.0)),
+        "skirt_loops": int(plan.get("skirt_loops", 2)),
+        "first_layer_height": float(plan.get("first_layer_height", max(float(plan.get("layer_height", 0.2)), round(float(plan.get("layer_height", 0.2)) * 1.4, 2)))),
+        "first_layer_speed": int(plan.get("first_layer_speed", max(15, int(int(plan.get("print_speed", 50)) * 0.45)))),
+        "first_layer_flow": int(plan.get("first_layer_flow", 100)),
+        "jerk_control": int(plan.get("jerk_control", 8)),
+        "stability_mode": str(plan.get("stability_mode", "Balanced")),
+        "profile_preset": str(plan.get("profile_preset", "Recommended")),
+        "adhesion": str(plan.get("adhesion", "Skirt")),
+        "support_enabled": bool(plan.get("support_enabled", False)),
+    }
+
+
+def apply_snapshot_to_state(artifact_hash: str, snapshot: dict[str, object]) -> None:
+    controls = dict(snapshot.get("controls", {}))
+    state_map = {
+        "layer_height": f"edit_layer_{artifact_hash}",
+        "print_speed": f"edit_speed_{artifact_hash}",
+        "infill_percent": f"edit_infill_{artifact_hash}",
+        "wall_loops": f"edit_walls_{artifact_hash}",
+        "nozzle_temp": f"edit_nozzle_{artifact_hash}",
+        "bed_temp": f"edit_bed_{artifact_hash}",
+        "flow_multiplier": f"edit_flow_{artifact_hash}",
+        "support_density": f"edit_support_density_{artifact_hash}",
+        "top_layers": f"edit_top_layers_{artifact_hash}",
+        "bottom_layers": f"edit_bottom_layers_{artifact_hash}",
+        "retraction_length": f"edit_retraction_{artifact_hash}",
+        "acceleration": f"edit_acceleration_{artifact_hash}",
+        "seam_position": f"edit_seam_{artifact_hash}",
+        "gcode_flavor": f"edit_gcode_flavor_{artifact_hash}",
+        "outer_wall_speed": f"edit_outer_wall_speed_{artifact_hash}",
+        "inner_wall_speed": f"edit_inner_wall_speed_{artifact_hash}",
+        "travel_speed": f"edit_travel_speed_{artifact_hash}",
+        "infill_pattern": f"edit_infill_pattern_{artifact_hash}",
+        "support_interface": f"edit_support_interface_{artifact_hash}",
+        "support_pattern": f"edit_support_pattern_{artifact_hash}",
+        "brim_width": f"edit_brim_width_{artifact_hash}",
+        "skirt_loops": f"edit_skirt_loops_{artifact_hash}",
+        "first_layer_height": f"edit_first_layer_height_{artifact_hash}",
+        "first_layer_speed": f"edit_first_layer_speed_{artifact_hash}",
+        "first_layer_flow": f"edit_first_layer_flow_{artifact_hash}",
+        "jerk_control": f"edit_jerk_{artifact_hash}",
+        "stability_mode": f"edit_stability_{artifact_hash}",
+        "profile_preset": f"edit_profile_preset_{artifact_hash}",
+    }
+    for field, state_key in state_map.items():
+        if field in controls:
+            st.session_state[state_key] = controls[field]
+    st.session_state[f"edit_restore_point_{artifact_hash}"] = str(snapshot.get("label", "Saved snapshot"))
+
+
+def ensure_plan_snapshot_baseline(
+    artifact_hash: str,
+    recommended_plan: dict[str, str | float | int | bool],
+    filename: str,
+    printer: str,
+    filament: str,
+) -> None:
+    snapshot_key = f"plan_snapshots_{artifact_hash}"
+    if snapshot_key not in st.session_state:
+        st.session_state[snapshot_key] = [
+            {
+                "label": "Recommended baseline",
+                "filename": filename,
+                "printer": printer,
+                "filament": filament,
+                "controls": extract_plan_controls(recommended_plan),
+                "kind": "baseline",
+            }
+        ]
+
+
+def save_plan_snapshot(
+    artifact_hash: str,
+    label: str,
+    filename: str,
+    printer: str,
+    filament: str,
+    plan: dict[str, str | float | int | bool],
+    reason: str,
+) -> None:
+    snapshot_key = f"plan_snapshots_{artifact_hash}"
+    snapshots = list(st.session_state.get(snapshot_key, []))
+    snapshots.append(
+        {
+            "label": label,
+            "filename": filename,
+            "printer": printer,
+            "filament": filament,
+            "controls": extract_plan_controls(plan),
+            "kind": reason,
+        }
+    )
+    st.session_state[snapshot_key] = snapshots[-8:]
+
+
+def build_snapshot_diff_lines(
+    left_snapshot: dict[str, object],
+    right_snapshot: dict[str, object],
+) -> list[str]:
+    left_controls = dict(left_snapshot.get("controls", {}))
+    right_controls = dict(right_snapshot.get("controls", {}))
+    labels = {
+        "layer_height": "Layer height",
+        "print_speed": "Print speed",
+        "infill_percent": "Infill",
+        "wall_loops": "Wall loops",
+        "nozzle_temp": "Nozzle temp",
+        "bed_temp": "Bed temp",
+        "flow_multiplier": "Flow multiplier",
+        "support_density": "Support density",
+        "top_layers": "Top layers",
+        "bottom_layers": "Bottom layers",
+        "retraction_length": "Retraction",
+        "acceleration": "Acceleration",
+        "seam_position": "Seam position",
+        "outer_wall_speed": "Outer wall speed",
+        "inner_wall_speed": "Inner wall speed",
+        "travel_speed": "Travel speed",
+        "infill_pattern": "Infill pattern",
+        "support_interface": "Support interface",
+        "support_pattern": "Support pattern",
+        "brim_width": "Brim width",
+        "skirt_loops": "Skirt loops",
+        "first_layer_height": "First-layer height",
+        "first_layer_speed": "First-layer speed",
+        "first_layer_flow": "First-layer flow",
+        "jerk_control": "Jerk control",
+        "stability_mode": "Stability mode",
+        "profile_preset": "Profile preset",
+    }
+    lines: list[str] = []
+    for field, label in labels.items():
+        if left_controls.get(field) != right_controls.get(field):
+            lines.append(f"{label}: `{left_controls.get(field)}` -> `{right_controls.get(field)}`")
+    return lines
+
+
+def build_snapshot_export_text(snapshot: dict[str, object]) -> str:
+    controls = dict(snapshot.get("controls", {}))
+    return textwrap.dedent(
+        f"""
+        CipherSlice Plan Snapshot
+
+        Label: {snapshot.get('label', 'Unnamed snapshot')}
+        Part: {snapshot.get('filename', 'Unknown')}
+        Printer: {snapshot.get('printer', 'Unknown')}
+        Filament: {snapshot.get('filament', 'Unknown')}
+        Snapshot type: {snapshot.get('kind', 'manual')}
+
+        Controls:
+        {json.dumps(controls, indent=2)}
+        """
+    ).strip()
+
+
+def build_what_if_plan_summary(
+    uploaded_file,
+    printer_name: str,
+    printer_profile: dict[str, object],
+    filament: str,
+    quality_profile: str,
+    print_goal: str,
+    support_strategy: str,
+    adhesion_strategy: str,
+    auto_scale_mesh: bool,
+) -> tuple[dict[str, object] | None, dict[str, str | float | int | bool], float, str]:
+    mesh_analysis = analyze_mesh(uploaded_file, printer_name, printer_profile, auto_scale_mesh)
+    plan = optimize_print_plan(
+        printer_profile,
+        filament,
+        quality_profile,
+        print_goal,
+        support_strategy,
+        adhesion_strategy,
+    )
+    plan = refine_plan_for_geometry(plan, mesh_analysis, support_strategy, printer_profile)
+    risk_lookup = {"Low": 0.98, "Medium": 0.88, "High": 0.72, "Unknown": 0.8}
+    score = risk_lookup.get(str(mesh_analysis.get("risk_level", "Unknown")), 0.8)
+    if mesh_analysis.get("issues"):
+        score -= 0.12
+    if not mesh_analysis.get("mesh_ok", True):
+        score -= 0.12
+    score = max(0.45, min(0.99, score))
+    fit_state = "Fits cleanly" if mesh_analysis.get("mesh_ok", True) and not mesh_analysis.get("issues") else "Needs review"
+    return mesh_analysis, plan, score, fit_state
 
 
 def get_persona() -> dict[str, object]:
@@ -1579,16 +2336,31 @@ def build_plan_diff(
         ("Infill", recommended_plan["infill_percent"], optimized_plan["infill_percent"]),
         ("Wall loops", recommended_plan["wall_loops"], optimized_plan["wall_loops"]),
         ("Print speed", recommended_plan["print_speed"], optimized_plan["print_speed"]),
+        ("Outer wall speed", recommended_plan.get("outer_wall_speed"), optimized_plan.get("outer_wall_speed")),
+        ("Inner wall speed", recommended_plan.get("inner_wall_speed"), optimized_plan.get("inner_wall_speed")),
+        ("Travel speed", recommended_plan.get("travel_speed"), optimized_plan.get("travel_speed")),
         ("Nozzle temp", recommended_plan["nozzle_temp"], optimized_plan["nozzle_temp"]),
         ("Bed temp", recommended_plan["bed_temp"], optimized_plan["bed_temp"]),
+        ("Flow multiplier", recommended_plan.get("flow_multiplier"), optimized_plan.get("flow_multiplier")),
+        ("First-layer height", recommended_plan.get("first_layer_height"), optimized_plan.get("first_layer_height")),
+        ("First-layer speed", recommended_plan.get("first_layer_speed"), optimized_plan.get("first_layer_speed")),
+        ("First-layer flow", recommended_plan.get("first_layer_flow"), optimized_plan.get("first_layer_flow")),
         ("Support enabled", recommended_plan["support_enabled"], optimized_plan["support_enabled"]),
         ("Support density", recommended_plan.get("support_density"), optimized_plan.get("support_density")),
+        ("Support interface", recommended_plan.get("support_interface"), optimized_plan.get("support_interface")),
+        ("Support pattern", recommended_plan.get("support_pattern"), optimized_plan.get("support_pattern")),
         ("Adhesion", recommended_plan["adhesion"], optimized_plan["adhesion"]),
+        ("Brim width", recommended_plan.get("brim_width"), optimized_plan.get("brim_width")),
+        ("Skirt loops", recommended_plan.get("skirt_loops"), optimized_plan.get("skirt_loops")),
         ("Top layers", recommended_plan.get("top_layers"), optimized_plan.get("top_layers")),
         ("Bottom layers", recommended_plan.get("bottom_layers"), optimized_plan.get("bottom_layers")),
         ("Retraction", recommended_plan.get("retraction_length"), optimized_plan.get("retraction_length")),
         ("Acceleration", recommended_plan.get("acceleration"), optimized_plan.get("acceleration")),
+        ("Jerk control", recommended_plan.get("jerk_control"), optimized_plan.get("jerk_control")),
         ("Seam position", recommended_plan.get("seam_position"), optimized_plan.get("seam_position")),
+        ("Infill pattern", recommended_plan.get("infill_pattern"), optimized_plan.get("infill_pattern")),
+        ("Stability mode", recommended_plan.get("stability_mode"), optimized_plan.get("stability_mode")),
+        ("Profile preset", recommended_plan.get("profile_preset"), optimized_plan.get("profile_preset")),
         ("G-code flavor", recommended_plan.get("gcode_flavor"), optimized_plan.get("gcode_flavor")),
         ("Delivery mode", delivery_mode, delivery_mode),
     ]
@@ -1609,15 +2381,30 @@ def build_plan_change_cards(
         ("Infill", recommended_plan["infill_percent"], optimized_plan["infill_percent"], "Higher infill usually adds strength, time, and material use."),
         ("Wall loops", recommended_plan["wall_loops"], optimized_plan["wall_loops"], "More walls can help durability, but too many can swallow thin features."),
         ("Print speed", recommended_plan["print_speed"], optimized_plan["print_speed"], "Faster motion can save time but increase ringing, layer inconsistency, or instability."),
+        ("Outer wall speed", recommended_plan.get("outer_wall_speed"), optimized_plan.get("outer_wall_speed"), "Outer wall speed affects visible surface quality more than inner structure speed."),
+        ("Inner wall speed", recommended_plan.get("inner_wall_speed"), optimized_plan.get("inner_wall_speed"), "Inner wall speed changes how quickly the machine builds the internal shell."),
+        ("Travel speed", recommended_plan.get("travel_speed"), optimized_plan.get("travel_speed"), "Travel speed changes stringing risk and motion aggression between features."),
         ("Nozzle temp", recommended_plan["nozzle_temp"], optimized_plan["nozzle_temp"], "Temperature changes affect bonding, stringing, and surface behavior."),
         ("Bed temp", recommended_plan["bed_temp"], optimized_plan["bed_temp"], "Bed heat changes first-layer grip and warp resistance."),
+        ("Flow multiplier", recommended_plan.get("flow_multiplier"), optimized_plan.get("flow_multiplier"), "Flow changes can rescue underfill or distort part dimensions if pushed too far."),
         ("Support density", recommended_plan.get("support_density"), optimized_plan.get("support_density"), "Denser support can help overhangs but is harder to remove."),
+        ("Support interface", recommended_plan.get("support_interface"), optimized_plan.get("support_interface"), "Support interface can improve the underside finish, but adds more contact and cleanup."),
+        ("Support pattern", recommended_plan.get("support_pattern"), optimized_plan.get("support_pattern"), "Support pattern changes support strength and peel-away behavior."),
         ("Adhesion", recommended_plan["adhesion"], optimized_plan["adhesion"], "Adhesion changes shift first-layer safety and cleanup effort."),
+        ("Brim width", recommended_plan.get("brim_width"), optimized_plan.get("brim_width"), "Brim width mainly affects first-layer grip on wide or tall parts."),
+        ("Skirt loops", recommended_plan.get("skirt_loops"), optimized_plan.get("skirt_loops"), "Skirt loops are mostly a priming and consistency choice."),
         ("Top layers", recommended_plan.get("top_layers"), optimized_plan.get("top_layers"), "More top layers can help close surfaces but increase print time."),
         ("Bottom layers", recommended_plan.get("bottom_layers"), optimized_plan.get("bottom_layers"), "More bottom layers can strengthen the base but use more material."),
+        ("First-layer height", recommended_plan.get("first_layer_height"), optimized_plan.get("first_layer_height"), "First-layer height strongly affects initial grip and surface squish."),
+        ("First-layer speed", recommended_plan.get("first_layer_speed"), optimized_plan.get("first_layer_speed"), "First-layer speed is one of the biggest first-layer reliability levers."),
+        ("First-layer flow", recommended_plan.get("first_layer_flow"), optimized_plan.get("first_layer_flow"), "First-layer flow changes how aggressively the part bonds to the bed."),
         ("Retraction", recommended_plan.get("retraction_length"), optimized_plan.get("retraction_length"), "Retraction changes can reduce stringing or create jams if pushed too far."),
         ("Acceleration", recommended_plan.get("acceleration"), optimized_plan.get("acceleration"), "Higher acceleration feels faster but can hurt print consistency on shaky parts."),
+        ("Jerk control", recommended_plan.get("jerk_control"), optimized_plan.get("jerk_control"), "Jerk changes how abruptly the machine changes direction."),
         ("Seam position", recommended_plan.get("seam_position"), optimized_plan.get("seam_position"), "Seam changes mostly affect where surface marks collect."),
+        ("Infill pattern", recommended_plan.get("infill_pattern"), optimized_plan.get("infill_pattern"), "Pattern changes internal strength direction and print rhythm."),
+        ("Stability mode", recommended_plan.get("stability_mode"), optimized_plan.get("stability_mode"), "Stability mode explains whether the plan leans toward safety, speed, or surface finish."),
+        ("Profile preset", recommended_plan.get("profile_preset"), optimized_plan.get("profile_preset"), "The preset signals the overall tuning personality of the current live plan."),
         ("G-code flavor", recommended_plan.get("gcode_flavor"), optimized_plan.get("gcode_flavor"), "Flavor changes must match the target firmware to avoid bad commands."),
     ]
     for label, recommended_value, current_value, reason in comparisons:
@@ -1626,11 +2413,11 @@ def build_plan_change_cards(
         risk = "moderate"
         recommended_num = recommended_value if isinstance(recommended_value, (int, float)) else None
         current_num = current_value if isinstance(current_value, (int, float)) else None
-        if label in {"Print speed", "Acceleration", "Retraction", "G-code flavor"}:
+        if label in {"Print speed", "Outer wall speed", "Nozzle temp", "Bed temp", "Acceleration", "Retraction", "First-layer height", "First-layer speed", "First-layer flow", "G-code flavor"}:
             risk = "watch closely"
         elif label in {"Wall loops", "Infill", "Support density"} and recommended_num is not None and current_num is not None and current_num > recommended_num:
             risk = "stronger but heavier"
-        elif label in {"Layer height", "Nozzle temp", "Bed temp"}:
+        elif label in {"Layer height", "Flow multiplier", "Travel speed", "Jerk control"}:
             risk = "tuning-sensitive"
         cards.append(
             {
@@ -1642,6 +2429,169 @@ def build_plan_change_cards(
             }
         )
     return cards
+
+
+def build_plan_change_summary(cards: list[dict[str, str]]) -> list[tuple[str, str, str]]:
+    if not cards:
+        return [
+            ("Override count", "0", "The current live plan still matches CipherSlice's recommended path."),
+            ("Risky overrides", "0", "No high-attention tuning changes are active right now."),
+            ("Tradeoff tilt", "Balanced", "This plan is still sitting close to the safer recommended profile."),
+        ]
+    risk_count = sum(1 for card in cards if card["risk"] in {"watch closely", "tuning-sensitive"})
+    strength_count = sum(1 for card in cards if card["risk"] == "stronger but heavier")
+    if risk_count >= 4:
+        tilt = "Aggressive"
+        tilt_copy = "Several high-attention changes are active, so the plan is leaning further away from the safer baseline."
+    elif strength_count >= 3:
+        tilt = "Strength-heavy"
+        tilt_copy = "This plan is leaning toward stronger shells and support at the cost of time or cleanup."
+    else:
+        tilt = "Balanced"
+        tilt_copy = "The current changes look more like measured tuning than a full profile rewrite."
+    return [
+        ("Override count", str(len(cards)), "How many tracked settings moved away from CipherSlice's first recommendation."),
+        ("Risky overrides", str(risk_count), "These are the settings most likely to change print behavior in noticeable ways."),
+        ("Tradeoff tilt", tilt, tilt_copy),
+    ]
+
+
+def build_plan_tradeoff_estimate(
+    recommended_plan: dict[str, str | float | int | bool],
+    optimized_plan: dict[str, str | float | int | bool],
+) -> list[tuple[str, str]]:
+    rec_speed = float(recommended_plan.get("print_speed", 50))
+    cur_speed = float(optimized_plan.get("print_speed", 50))
+    rec_infill = float(recommended_plan.get("infill_percent", 20))
+    cur_infill = float(optimized_plan.get("infill_percent", 20))
+    rec_walls = float(recommended_plan.get("wall_loops", 3))
+    cur_walls = float(optimized_plan.get("wall_loops", 3))
+    rec_layers = float(recommended_plan.get("layer_height", 0.2))
+    cur_layers = float(optimized_plan.get("layer_height", 0.2))
+    time_factor = (rec_speed / max(cur_speed, 1.0)) * (rec_layers / max(cur_layers, 0.05))
+    material_factor = ((cur_infill + (cur_walls * 6.0)) / max(rec_infill + (rec_walls * 6.0), 1.0))
+    quality_delta = "Higher" if cur_layers < rec_layers or cur_speed < rec_speed else ("Lower" if cur_layers > rec_layers or cur_speed > rec_speed else "Similar")
+    return [
+        ("Time drift", f"{time_factor * 100:.0f}% of baseline"),
+        ("Material drift", f"{material_factor * 100:.0f}% of baseline"),
+        ("Surface tilt", quality_delta),
+    ]
+
+
+def restore_risky_recommended_settings(
+    artifact_hash: str,
+    recommended_plan: dict[str, str | float | int | bool],
+) -> None:
+    risky_state_map = {
+        "print_speed": f"edit_speed_{artifact_hash}",
+        "outer_wall_speed": f"edit_outer_wall_speed_{artifact_hash}",
+        "nozzle_temp": f"edit_nozzle_{artifact_hash}",
+        "bed_temp": f"edit_bed_{artifact_hash}",
+        "first_layer_height": f"edit_first_layer_height_{artifact_hash}",
+        "first_layer_speed": f"edit_first_layer_speed_{artifact_hash}",
+        "first_layer_flow": f"edit_first_layer_flow_{artifact_hash}",
+        "retraction_length": f"edit_retraction_{artifact_hash}",
+        "acceleration": f"edit_acceleration_{artifact_hash}",
+        "jerk_control": f"edit_jerk_{artifact_hash}",
+        "gcode_flavor": f"edit_gcode_flavor_{artifact_hash}",
+        "seam_position": f"edit_seam_{artifact_hash}",
+    }
+    for field, state_key in risky_state_map.items():
+        if field in recommended_plan:
+            st.session_state[state_key] = recommended_plan[field]
+
+
+def build_geometry_fix_actions(mesh_analysis: dict[str, object] | None) -> list[str]:
+    if not mesh_analysis:
+        return ["Upload a mesh so CipherSlice can start geometry-specific fixes."]
+    actions: list[str] = []
+    if str(mesh_analysis.get("unsupported_risk")) in {"Widespread unsupported surfaces", "Localized unsupported pockets"}:
+        actions.append("Try the recommended orientation first, then increase support only if the new posture still leaves exposed underside areas.")
+    if str(mesh_analysis.get("bridge_risk")) in {"Bridge-heavy geometry", "Some bridging pressure"}:
+        actions.append("Slow the part down slightly or choose a posture that shortens unsupported spans before adding more material everywhere.")
+    if float(mesh_analysis.get("first_layer_contact_percent") or 0.0) < 16:
+        actions.append("Use a brim or a flatter starting face so the print begins with a wider contact patch.")
+    if str(mesh_analysis.get("thin_wall_risk")) in {"Thin-wall danger", "Thin-wall sensitive"}:
+        actions.append("Reduce wall count or use a finer nozzle if preserving slim detail matters more than brute strength.")
+    if str(mesh_analysis.get("warp_risk")) in {"High warp footprint", "Moderate warp footprint"}:
+        actions.append("Keep first-layer grip stronger than usual and avoid unnecessary speed on wide parts.")
+    if not actions:
+        actions.append("No major geometry-specific fix path is active. The current part looks fairly cooperative for the selected machine.")
+    return actions
+
+
+def build_slicer_capability_report(
+    slicer_label: str | None,
+    slicer_path: str | None,
+    printer_profile: dict[str, object],
+    optimized_plan: dict[str, str | float | int | bool],
+) -> list[tuple[str, str]]:
+    flavor = str(optimized_plan.get("gcode_flavor", printer_profile.get("gcode_flavor", "Unknown")))
+    engine_ok = bool(slicer_path)
+    flavor_ok = bool(slicer_path) and any(token in (slicer_label or "").lower() for token in ("prusa", "orca", "slic3r", "cura"))
+    custom_profile = bool(printer_profile.get("start_gcode") or printer_profile.get("end_gcode"))
+    return [
+        ("Engine detected", "Yes" if engine_ok else "No"),
+        ("Engine family", slicer_label or "Not detected"),
+        ("Flavor mapping", "Looks compatible" if flavor_ok else f"Review needed for `{flavor}`"),
+        ("Custom start/end code", "Included" if custom_profile else "Not customized"),
+        ("Release truth", "Can move toward real print file" if engine_ok else "Still planning preview only"),
+    ]
+
+
+def build_slicer_decision_notes(
+    optimized_plan: dict[str, str | float | int | bool],
+    mesh_analysis: dict[str, object] | None,
+) -> list[str]:
+    notes = [
+        "The slicer will still decide the exact toolpath order, line placement, acceleration timing, and support geometry details.",
+        "CipherSlice is deciding the strategy and the safer starting profile, not replacing the deterministic toolpath engine.",
+    ]
+    if mesh_analysis and mesh_analysis.get("recommended_orientation_label"):
+        notes.append(f"CipherSlice will hand the slicer a preferred posture of `{mesh_analysis.get('recommended_orientation_label')}` for this part.")
+    notes.append(f"The current seam strategy entering the slicer is `{optimized_plan.get('seam_position', 'Rear')}`.")
+    return notes
+
+
+def build_handoff_audit_trail(
+    filename: str,
+    artifact_hash: str,
+    printer: str,
+    filament: str,
+    delivery_mode: str,
+    optimized_plan: dict[str, str | float | int | bool],
+    mesh_analysis: dict[str, object] | None,
+    overall_confidence: float,
+    objections: list[str],
+) -> str:
+    return textwrap.dedent(
+        f"""
+        CipherSlice Handoff Audit Trail
+
+        Source file: {filename}
+        Artifact hash: {artifact_hash}
+        Printer: {printer}
+        Filament: {filament}
+        Delivery mode: {delivery_mode}
+        Confidence: {overall_confidence * 100:.1f}%
+        Recommended orientation: {mesh_analysis.get('recommended_orientation_label', 'Unknown') if mesh_analysis else 'Unknown'}
+        Geometry risk: {mesh_analysis.get('risk_level', 'Unknown') if mesh_analysis else 'Unknown'}
+        Thin-wall risk: {mesh_analysis.get('thin_wall_risk', 'Unknown') if mesh_analysis else 'Unknown'}
+        Unsupported risk: {mesh_analysis.get('unsupported_risk', 'Unknown') if mesh_analysis else 'Unknown'}
+        Bridge risk: {mesh_analysis.get('bridge_risk', 'Unknown') if mesh_analysis else 'Unknown'}
+        Layer height: {optimized_plan.get('layer_height')}
+        Infill: {optimized_plan.get('infill_percent')}%
+        Wall loops: {optimized_plan.get('wall_loops')}
+        Print speed: {optimized_plan.get('print_speed')} mm/s
+        Support density: {optimized_plan.get('support_density')}
+        Adhesion: {optimized_plan.get('adhesion')}
+        G-code flavor: {optimized_plan.get('gcode_flavor')}
+        Blockers: {len(objections)}
+
+        Blocker details:
+        {chr(10).join('- ' + item for item in objections) if objections else '- No active blockers in the software review chain.'}
+        """
+    ).strip()
 
 
 def build_slicer_transition_notes(
@@ -1840,22 +2790,40 @@ def optimize_print_plan(
         optimized_speed = max(20, int(optimized_speed * 0.9))
     if filament in {"PETG", "ABS", "ASA", "Nylon", "PC", "CF Nylon"} and not heated_bed:
         bed_temp = max(0, int(bed_temp * 0.85))
+    support_pattern = "Grid" if filament in {"ABS", "ASA", "PC", "CF Nylon"} else "Lines"
+    infill_pattern = "Gyroid" if print_goal == "Functional strength" else ("Lines" if print_goal == "Visual prototype" else "Grid")
+    first_layer_height = round(max(layer_height_map[quality_profile], min(nozzle_diameter * 0.75, layer_height_map[quality_profile] * 1.4)), 2)
     return {
         "layer_height": layer_height_map[quality_profile],
         "infill_percent": infill_map[print_goal],
         "wall_loops": wall_map[print_goal],
         "print_speed": optimized_speed,
+        "outer_wall_speed": max(15, int(optimized_speed * 0.55)),
+        "inner_wall_speed": max(18, int(optimized_speed * 0.82)),
+        "travel_speed": min(400, max(80, int(optimized_speed * 2.2))),
         "support_enabled": support_enabled,
         "support_density": 18 if not support_enabled else 24,
+        "support_interface": support_enabled,
+        "support_pattern": support_pattern,
         "support_threshold": 40,
         "adhesion": adhesion_map[adhesion_strategy],
+        "brim_width": 6.0 if adhesion_map[adhesion_strategy] == "Brim" else 0.0,
+        "skirt_loops": 2,
         "nozzle_temp": nozzle_temp,
         "bed_temp": bed_temp,
+        "flow_multiplier": 100,
         "top_layers": 4,
         "bottom_layers": 4,
+        "first_layer_height": first_layer_height,
+        "first_layer_speed": max(15, int(optimized_speed * 0.45)),
+        "first_layer_flow": 100,
         "retraction_length": 1.2 if filament != "TPU" else 0.6,
         "acceleration": 3000 if print_goal != "Visual prototype" else 2200,
+        "jerk_control": 8,
         "seam_position": "Rear",
+        "infill_pattern": infill_pattern,
+        "stability_mode": "Balanced",
+        "profile_preset": "Recommended",
         "orientation": profile["orientation"],
         "bed_shape": profile["bed_shape"],
         "nozzle_diameter": profile["nozzle_diameter"],
@@ -1893,6 +2861,22 @@ def analyze_mesh(uploaded_file, printer_name: str, printer_profile: dict[str, ob
         "detail_risk": "Unknown",
         "warp_risk": "Unknown",
         "fit_style": "Unknown",
+        "thin_wall_risk": "Unknown",
+        "unsupported_risk": "Unknown",
+        "first_layer_contact_percent": None,
+        "bridge_risk": "Unknown",
+        "overhang_scope": "Unknown",
+        "survivability_hint": "Unknown",
+        "orientation_candidates": [],
+        "recommended_orientation_label": "Unknown",
+        "orientation_shift_note": "",
+        "support_density_hint": "Unknown",
+        "adhesion_hint": "Unknown",
+        "preview_mesh": None,
+        "component_count": 1,
+        "hole_risk": "Unknown",
+        "wall_thickness_estimate": "Unknown",
+        "fragile_zone_summary": "Unknown",
     }
     bed_x, bed_y = parse_bed_shape(str(printer_profile["bed_shape"]))
     max_height = float(printer_profile["max_height_mm"])
@@ -1929,6 +2913,7 @@ def analyze_mesh(uploaded_file, printer_name: str, printer_profile: dict[str, ob
             analysis["scaled_extents_mm"] = [round(value * scale_factor, 2) for value in extents]
         else:
             analysis["scaled_extents_mm"] = extents
+        analysis["preview_mesh"] = build_preview_mesh_data(mesh, float(analysis.get("scale_factor", 1.0)))
 
         if not mesh.is_watertight:
             analysis["mesh_ok"] = False
@@ -1957,8 +2942,26 @@ def analyze_mesh(uploaded_file, printer_name: str, printer_profile: dict[str, ob
             bed_fill_ratio = (test_extents[0] * test_extents[1]) / max((bed_x * bed_y), 1)
             slender_ratio = max_dim / min_dim
             face_density = (int(analysis["face_count"] or 0) / max(max_dim * max(min_dim, 1), 1)) if analysis["face_count"] else 0
+            components = mesh.split(only_watertight=False) if hasattr(mesh, "split") else [mesh]
+            component_count = len(components) if components is not None else 1
+            analysis["component_count"] = component_count
+            scale_area_factor = float(analysis.get("scale_factor", 1.0)) ** 2
+            bbox_footprint_area = max(float(extents[0]) * float(extents[1]), 1.0)
+            min_z = float(mesh.bounds[0][2])
+            z_span = max(float(mesh.extents[2]), 0.01)
+            centers = np.asarray(mesh.triangles_center)
+            normals = np.asarray(mesh.face_normals)
+            areas = np.asarray(mesh.area_faces)
+            bottom_mask = (normals[:, 2] < -0.72) & (centers[:, 2] <= min_z + max(z_span * 0.025, 0.45))
+            overhang_mask = (normals[:, 2] < -0.38) & (centers[:, 2] > min_z + max(z_span * 0.08, 0.8))
+            bridge_mask = (normals[:, 2] < -0.76) & (centers[:, 2] > min_z + max(z_span * 0.18, 1.2))
+            base_contact_area = float(areas[bottom_mask].sum()) * scale_area_factor if len(areas) else 0.0
+            overhang_area_ratio = float(areas[overhang_mask].sum() / max(float(areas.sum()), 1.0)) if len(areas) else 0.0
+            bridge_area_ratio = float(areas[bridge_mask].sum() / max(float(areas.sum()), 1.0)) if len(areas) else 0.0
+            base_contact_ratio = base_contact_area / max(test_extents[0] * test_extents[1], 1.0)
             analysis["bed_use_percent"] = round(min(100.0, bed_fill_ratio * 100), 1)
             analysis["height_use_percent"] = round(min(100.0, (test_extents[2] / max(max_height, 1)) * 100), 1)
+            analysis["first_layer_contact_percent"] = round(min(100.0, base_contact_ratio * 100), 1)
             analysis["fit_margin_mm"] = round(
                 min(bed_x - test_extents[0], bed_y - test_extents[1], max_height - test_extents[2]),
                 2,
@@ -1973,6 +2976,27 @@ def analyze_mesh(uploaded_file, printer_name: str, printer_profile: dict[str, ob
                 analysis["detail_risk"] = "Normal detail scale"
                 analysis["healthy_signals"].append("Feature scale looks reasonable for a standard hobby-printer workflow.")
 
+            nozzle_diameter = float(printer_profile.get("nozzle_diameter", 0.4))
+            if min_dim < nozzle_diameter * 2.1:
+                analysis["thin_wall_risk"] = "Thin-wall danger"
+                analysis["warning_issues"].append("Some features look close to or below a comfortable multi-line nozzle width, so walls may vanish or fuse together.")
+            elif min_dim < nozzle_diameter * 3.4:
+                analysis["thin_wall_risk"] = "Thin-wall sensitive"
+                analysis["warning_issues"].append("This model has slim features, so wall count and nozzle size matter more than usual.")
+            else:
+                analysis["thin_wall_risk"] = "Normal wall scale"
+                analysis["healthy_signals"].append("Feature thickness looks more forgiving for a standard nozzle.")
+            estimated_lines = max(min_dim / max(nozzle_diameter * 0.48, 0.01), 0.0)
+            analysis["wall_thickness_estimate"] = f"~{estimated_lines:.1f} line-widths at the thinnest visible scale"
+
+            if face_density > 450 and min_dim < 3.0:
+                analysis["hole_risk"] = "Small openings may close up"
+                analysis["warning_issues"].append("Very fine openings or slots may print smaller than designed unless the nozzle and wall settings stay conservative.")
+            elif face_density > 280:
+                analysis["hole_risk"] = "Fine openings deserve review"
+            else:
+                analysis["hole_risk"] = "No obvious small-hole pressure"
+
             if bed_fill_ratio > 0.7 and test_extents[2] < max_height * 0.45:
                 analysis["warp_risk"] = "High warp footprint"
                 analysis["warning_issues"].append("This wide footprint can raise warping risk, especially on hotter materials or drafty machines.")
@@ -1982,6 +3006,41 @@ def analyze_mesh(uploaded_file, printer_name: str, printer_profile: dict[str, ob
             else:
                 analysis["warp_risk"] = "Low warp footprint"
                 analysis["healthy_signals"].append("Bed coverage is moderate enough that warping pressure looks manageable.")
+
+            if component_count > 1:
+                analysis["unsupported_risk"] = "Multiple loose bodies"
+                analysis["warning_issues"].append("The upload appears to contain multiple disconnected mesh bodies, so slicing may create separate islands or accidental loose pieces.")
+            elif overhang_area_ratio > 0.16:
+                analysis["unsupported_risk"] = "Widespread unsupported surfaces"
+                analysis["warning_issues"].append("A large amount of the model appears to face downward away from the bed, so support planning matters much more here.")
+            elif overhang_area_ratio > 0.07:
+                analysis["unsupported_risk"] = "Localized unsupported pockets"
+                analysis["warning_issues"].append("There are likely unsupported pockets or local overhangs that deserve support review.")
+            else:
+                analysis["unsupported_risk"] = "Low unsupported exposure"
+                analysis["healthy_signals"].append("Most surfaces look support-friendly from the current print direction.")
+
+            if bridge_area_ratio > 0.12:
+                analysis["bridge_risk"] = "Bridge-heavy geometry"
+                analysis["warning_issues"].append("This part appears to have several unsupported spans that may behave more like bridges than normal overhangs.")
+            elif bridge_area_ratio > 0.05:
+                analysis["bridge_risk"] = "Some bridging pressure"
+                analysis["warning_issues"].append("There are a few likely bridge spans, so cooling and orientation deserve a closer look.")
+            else:
+                analysis["bridge_risk"] = "Low bridge pressure"
+
+            if overhang_area_ratio > 0.18:
+                analysis["overhang_scope"] = "Widespread"
+            elif overhang_area_ratio > 0.08:
+                analysis["overhang_scope"] = "Local pockets"
+            else:
+                analysis["overhang_scope"] = "Limited"
+
+            if base_contact_ratio < 0.16:
+                analysis["warning_issues"].append("The estimated first-layer contact patch is small, so the part may feel unstable unless orientation or adhesion improves.")
+            elif base_contact_ratio > 0.38:
+                analysis["healthy_signals"].append("The first-layer contact patch looks comfortably broad for a more stable start.")
+
             if height_ratio > 1.25:
                 analysis["geometry_profile"] = "Tall / tip-prone"
                 analysis["adaptive_notes"].append("Tall geometry detected. Slower motion, stronger adhesion, and support may help avoid tipping.")
@@ -1994,13 +3053,75 @@ def analyze_mesh(uploaded_file, printer_name: str, printer_profile: dict[str, ob
             else:
                 analysis["geometry_profile"] = "Compact / general purpose"
                 analysis["adaptive_notes"].append("Geometry looks fairly balanced for a standard print profile.")
+
+            if analysis["first_layer_contact_percent"] is not None and analysis["first_layer_contact_percent"] < 16:
+                analysis["adaptive_notes"].append("First-layer contact looks narrow. A flatter orientation or stronger brim strategy would likely help.")
+            if analysis["unsupported_risk"] in {"Widespread unsupported surfaces", "Localized unsupported pockets"}:
+                analysis["adaptive_notes"].append("Support pressure is not evenly distributed. A better orientation could remove some avoidable support burden.")
+            if analysis["bridge_risk"] in {"Bridge-heavy geometry", "Some bridging pressure"}:
+                analysis["adaptive_notes"].append("Bridge-heavy surfaces were detected. Cooling, slower bridge motion, or a rotated posture could improve the result.")
+
+            fragile_zones: list[str] = []
+            if analysis["thin_wall_risk"] in {"Thin-wall danger", "Thin-wall sensitive"}:
+                fragile_zones.append("slim walls")
+            if analysis["bridge_risk"] in {"Bridge-heavy geometry", "Some bridging pressure"}:
+                fragile_zones.append("unsupported spans")
+            if analysis["first_layer_contact_percent"] is not None and analysis["first_layer_contact_percent"] < 16:
+                fragile_zones.append("narrow starting footprint")
+            if analysis["unsupported_risk"] == "Multiple loose bodies":
+                fragile_zones.append("disconnected islands")
+            analysis["fragile_zone_summary"] = ", ".join(fragile_zones) if fragile_zones else "No strong fragile zones detected"
+
+            if min_dim < nozzle_diameter * 2.1:
+                analysis["survivability_hint"] = "Some small features may not survive a standard nozzle cleanly."
+            elif min_dim < nozzle_diameter * 3.4:
+                analysis["survivability_hint"] = "Fine features should survive, but only if walls and speed stay conservative."
+            else:
+                analysis["survivability_hint"] = "Feature scale looks reasonable for the current nozzle."
+
+            recommended_support_density = 24
+            if analysis["unsupported_risk"] == "Widespread unsupported surfaces":
+                recommended_support_density = 30
+            elif analysis["unsupported_risk"] == "Localized unsupported pockets":
+                recommended_support_density = 22
+            elif analysis["bridge_risk"] == "Bridge-heavy geometry":
+                recommended_support_density = 28
+            analysis["support_density_hint"] = f"{recommended_support_density}% suggested from geometry review"
+
+            adhesion_hint = "Skirt is probably enough."
+            if base_contact_ratio < 0.16 or height_ratio > 1.25:
+                adhesion_hint = "Brim is strongly recommended."
+            elif bed_fill_ratio > 0.55:
+                adhesion_hint = "Brim is worth considering for a safer first layer."
+            analysis["adhesion_hint"] = adhesion_hint
+
+            orientation_candidates = build_orientation_candidates(test_extents, printer_profile, analysis)
+            analysis["orientation_candidates"] = orientation_candidates
+            if orientation_candidates:
+                recommended_candidate = next((candidate for candidate in orientation_candidates if candidate.get("recommended")), orientation_candidates[0])
+                analysis["recommended_orientation_label"] = str(recommended_candidate["label"])
+                if recommended_candidate["label"] != "As loaded":
+                    analysis["orientation_shift_note"] = (
+                        f"CipherSlice would rather print this as `{recommended_candidate['label']}` than leave it exactly as loaded."
+                    )
+                    analysis["adaptive_notes"].append(analysis["orientation_shift_note"])
+                else:
+                    analysis["orientation_shift_note"] = "The uploaded orientation already looks like the best starting posture."
             if analysis["watertight"]:
                 analysis["healthy_signals"].append("Mesh is watertight, which is a strong sign for cleaner slicing behavior.")
             if xy_fits and test_extents[2] <= max_height:
                 analysis["healthy_signals"].append("The scaled part size fits the selected machine envelope.")
             if not analysis["mesh_ok"]:
                 analysis["risk_level"] = "High"
-            elif height_ratio > 1.25 or bed_fill_ratio > 0.55 or slender_ratio > 8 or min_dim < 1.2:
+            elif (
+                height_ratio > 1.25
+                or bed_fill_ratio > 0.55
+                or slender_ratio > 8
+                or min_dim < 1.2
+                or base_contact_ratio < 0.16
+                or overhang_area_ratio > 0.16
+                or bridge_area_ratio > 0.12
+            ):
                 analysis["risk_level"] = "Medium"
             else:
                 analysis["risk_level"] = "Low"
@@ -2074,12 +3195,41 @@ def refine_plan_for_geometry(
     if mesh_analysis.get("face_count") and int(mesh_analysis["face_count"]) > 400_000:
         refined["print_speed"] = max(20, int(int(refined["print_speed"]) * 0.92))
 
+    unsupported_risk = str(mesh_analysis.get("unsupported_risk", "Unknown"))
+    bridge_risk = str(mesh_analysis.get("bridge_risk", "Unknown"))
+    first_layer_contact = float(mesh_analysis.get("first_layer_contact_percent") or 0.0)
+    if unsupported_risk == "Widespread unsupported surfaces":
+        refined["support_enabled"] = True
+        refined["support_density"] = max(int(refined.get("support_density", 24)), 30)
+        refined["support_interface"] = True
+        refined["support_pattern"] = "Grid"
+    elif unsupported_risk == "Localized unsupported pockets":
+        refined["support_enabled"] = True if support_strategy != "Disabled" else refined["support_enabled"]
+        refined["support_density"] = max(int(refined.get("support_density", 24)), 22)
+        refined["support_pattern"] = "Lines"
+
+    if bridge_risk == "Bridge-heavy geometry":
+        refined["print_speed"] = max(18, int(int(refined["print_speed"]) * 0.86))
+        refined["outer_wall_speed"] = max(12, int(int(refined.get("outer_wall_speed", refined["print_speed"])) * 0.9))
+        refined["support_enabled"] = True if support_strategy != "Disabled" else refined["support_enabled"]
+
+    if first_layer_contact and first_layer_contact < 16:
+        if refined["adhesion"] in {"Auto", "Skirt"}:
+            refined["adhesion"] = "Brim"
+        refined["brim_width"] = max(float(refined.get("brim_width", 0.0)), 8.0)
+        refined["first_layer_flow"] = max(int(refined.get("first_layer_flow", 100)), 103)
+        refined["first_layer_speed"] = max(12, int(int(refined.get("first_layer_speed", 20)) * 0.9))
+
+    recommended_orientation_label = str(mesh_analysis.get("recommended_orientation_label", ""))
+    if recommended_orientation_label and recommended_orientation_label != "As loaded":
+        refined["orientation"] = f"{recommended_orientation_label} is the safer starting posture for this part."
+
     return refined
 
 
 def build_prusaslicer_config(plan: dict[str, str | float | int | bool]) -> str:
     support_value = 1 if plan["support_enabled"] else 0
-    brim_width = 0 if plan["adhesion"] != "Brim" else 5
+    brim_width = 0 if plan["adhesion"] != "Brim" else float(plan.get("brim_width", 5))
     raft_layers = 0 if plan["adhesion"] != "Raft" else 2
     start_gcode = str(plan.get("start_gcode", "")).replace("\r", "\\n").replace("\n", "\\n")
     end_gcode = str(plan.get("end_gcode", "")).replace("\r", "\\n").replace("\n", "\\n")
@@ -2088,29 +3238,54 @@ def build_prusaslicer_config(plan: dict[str, str | float | int | bool]) -> str:
     bottom_layers = int(plan.get("bottom_layers", 4))
     retraction_length = float(plan.get("retraction_length", 1.2))
     acceleration = int(plan.get("acceleration", 3000))
+    jerk_control = int(plan.get("jerk_control", 8))
     seam_position = str(plan.get("seam_position", "Rear"))
+    outer_wall_speed = int(plan.get("outer_wall_speed", plan["print_speed"]))
+    inner_wall_speed = int(plan.get("inner_wall_speed", plan["print_speed"]))
+    travel_speed = int(plan.get("travel_speed", plan["print_speed"]))
+    support_interface = 1 if plan.get("support_interface", False) else 0
+    support_pattern = str(plan.get("support_pattern", "Lines")).lower()
+    infill_pattern = str(plan.get("infill_pattern", "Gyroid")).lower()
+    skirt_loops = int(plan.get("skirt_loops", 2))
+    first_layer_height = float(plan.get("first_layer_height", plan["layer_height"]))
+    first_layer_speed = int(plan.get("first_layer_speed", max(15, int(plan["print_speed"] * 0.45))))
+    first_layer_flow = int(plan.get("first_layer_flow", 100))
+    flow_multiplier = int(plan.get("flow_multiplier", 100))
     return textwrap.dedent(
         f"""
         # CipherSlice generated slicer config
         # G-code flavor: {plan.get('gcode_flavor', 'Unknown')}
         layer_height = {plan['layer_height']}
+        first_layer_height = {first_layer_height}
         fill_density = {plan['infill_percent']}%
+        fill_pattern = {infill_pattern}
         perimeters = {plan['wall_loops']}
         top_solid_layers = {top_layers}
         bottom_solid_layers = {bottom_layers}
         nozzle_diameter = {plan['nozzle_diameter']}
         support_material = {support_value}
+        support_material_interface_layers = {support_interface}
+        support_material_pattern = {support_pattern}
         support_material_threshold = {support_threshold}
         first_layer_temperature = {plan['nozzle_temp']}
         temperature = {plan['nozzle_temp']}
         first_layer_bed_temperature = {plan['bed_temp']}
         bed_temperature = {plan['bed_temp']}
-        perimeters_speed = {plan['print_speed']}
-        infill_speed = {plan['print_speed']}
+        perimeters_speed = {outer_wall_speed}
+        external_perimeter_speed = {outer_wall_speed}
+        infill_speed = {inner_wall_speed}
+        solid_infill_speed = {inner_wall_speed}
+        travel_speed = {travel_speed}
+        first_layer_speed = {first_layer_speed}
+        extrusion_multiplier = {flow_multiplier / 100:.3f}
+        first_layer_extrusion_width = {first_layer_flow / 100:.3f}
         retract_length = {retraction_length}
         default_acceleration = {acceleration}
+        machine_max_jerk_x = {jerk_control}
+        machine_max_jerk_y = {jerk_control}
         seam_position = {seam_position}
         brim_width = {brim_width}
+        skirts = {skirt_loops}
         raft_layers = {raft_layers}
         start_gcode = {start_gcode}
         end_gcode = {end_gcode}
@@ -2747,7 +3922,7 @@ st.markdown(
         font-size: 0.9rem;
     }
     @media (max-width: 980px) {
-        .glance-grid, .change-grid, .transition-grid, .metric-strip, .delivery-grid, .persona-grid, .preview-grid, .ops-grid {
+        .glance-grid, .change-grid, .transition-grid, .metric-strip, .delivery-grid, .persona-grid, .preview-grid, .ops-grid, .review-header-grid, .summary-strip, .compare-grid, .manifest-grid, .confidence-grid {
             grid-template-columns: 1fr !important;
         }
     }
@@ -2804,6 +3979,55 @@ st.markdown(
         font-size: 0.86rem;
         line-height: 1.45;
     }
+    .review-header-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 0.7rem;
+        margin: 0.35rem 0 0.9rem;
+    }
+    .review-header-card {
+        background: linear-gradient(180deg, rgba(11, 28, 44, 0.96), rgba(8, 20, 34, 0.96));
+        border: 1px solid rgba(104, 144, 177, 0.22);
+        border-radius: 18px;
+        padding: 0.85rem 0.9rem;
+        min-height: 104px;
+    }
+    .review-header-title {
+        color: #8fa8bb;
+        font-size: 0.75rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-bottom: 0.28rem;
+    }
+    .review-header-value {
+        color: #f4f8fb;
+        font-size: 1.06rem;
+        font-weight: 700;
+        margin-bottom: 0.24rem;
+    }
+    .review-header-copy {
+        color: #a9bfce;
+        font-size: 0.84rem;
+        line-height: 1.45;
+    }
+    .summary-strip {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.6rem;
+        margin: 0.4rem 0 0.8rem;
+    }
+    .summary-pill {
+        background: rgba(90, 207, 171, 0.1);
+        border: 1px solid rgba(90, 207, 171, 0.16);
+        border-radius: 16px;
+        padding: 0.7rem 0.8rem;
+        color: #dffcf2;
+    }
+    .summary-pill strong {
+        display: block;
+        color: #f4f8fb;
+        margin-bottom: 0.18rem;
+    }
     .change-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2842,6 +4066,71 @@ st.markdown(
         text-transform: uppercase;
         letter-spacing: 0.05em;
     }
+    .compare-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.8rem;
+        margin-top: 0.75rem;
+    }
+    .compare-card {
+        background: rgba(8, 23, 37, 0.9);
+        border: 1px solid rgba(104, 144, 177, 0.2);
+        border-radius: 18px;
+        padding: 0.95rem 1rem;
+    }
+    .compare-card h5 {
+        color: #f4f8fb;
+        margin: 0 0 0.45rem;
+        font-size: 1rem;
+    }
+    .compare-card p {
+        color: #b7c8d5;
+        margin: 0.18rem 0;
+        line-height: 1.45;
+    }
+    .manifest-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem;
+        margin-top: 0.8rem;
+    }
+    .manifest-section {
+        background: rgba(8, 23, 37, 0.9);
+        border: 1px solid rgba(104, 144, 177, 0.18);
+        border-radius: 18px;
+        padding: 0.95rem 1rem;
+    }
+    .manifest-section-title {
+        color: #f4f8fb;
+        font-size: 0.98rem;
+        font-weight: 700;
+        margin-bottom: 0.45rem;
+    }
+    .confidence-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.7rem;
+        margin: 0.35rem 0 0.8rem;
+    }
+    .confidence-card {
+        background: rgba(8, 23, 37, 0.88);
+        border: 1px solid rgba(104, 144, 177, 0.18);
+        border-radius: 18px;
+        padding: 0.85rem 0.9rem;
+    }
+    .confidence-card-title {
+        color: #8fa8bb;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 0.25rem;
+    }
+    .confidence-card-value {
+        color: #f4f8fb;
+        font-size: 1.1rem;
+        font-weight: 700;
+        margin-bottom: 0.2rem;
+    }
     .transition-grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2863,6 +4152,121 @@ st.markdown(
         color: #b7c8d5;
         line-height: 1.5;
         font-size: 0.9rem;
+    }
+    .orientation-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.8rem;
+        margin-top: 0.75rem;
+    }
+    .orientation-card {
+        position: relative;
+        background: linear-gradient(180deg, rgba(9, 23, 38, 0.96), rgba(6, 15, 25, 0.96));
+        border: 1px solid rgba(104, 144, 177, 0.2);
+        border-radius: 18px;
+        padding: 0.95rem 1rem 1rem;
+        min-height: 280px;
+    }
+    .orientation-card-recommended {
+        border-color: rgba(104, 241, 193, 0.34);
+        box-shadow: 0 0 0 1px rgba(104, 241, 193, 0.08), 0 12px 26px rgba(0, 0, 0, 0.2);
+    }
+    .orientation-badge {
+        display: inline-block;
+        margin-bottom: 0.55rem;
+        padding: 0.22rem 0.58rem;
+        border-radius: 999px;
+        background: rgba(90, 207, 171, 0.16);
+        border: 1px solid rgba(104, 241, 193, 0.2);
+        color: #dffcf2;
+        font-size: 0.76rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .orientation-title {
+        color: #f4f8fb;
+        font-size: 1rem;
+        font-weight: 700;
+        margin-bottom: 0.28rem;
+    }
+    .orientation-copy {
+        color: #b7c8d5;
+        line-height: 1.5;
+        font-size: 0.9rem;
+    }
+    .orientation-svg {
+        width: 100%;
+        height: 126px;
+        margin: 0.55rem 0 0.35rem;
+    }
+    .orientation-meta {
+        color: #cfe0ec;
+        font-size: 0.86rem;
+        line-height: 1.45;
+        margin-bottom: 0.2rem;
+    }
+    .insight-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.75rem;
+        margin: 0.75rem 0 0.9rem;
+    }
+    .insight-card {
+        background: rgba(8, 23, 37, 0.9);
+        border: 1px solid rgba(104, 144, 177, 0.18);
+        border-radius: 18px;
+        padding: 0.85rem 0.95rem;
+    }
+    .insight-card-title {
+        color: #8fa8bb;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 0.25rem;
+    }
+    .insight-card-value {
+        color: #f4f8fb;
+        font-size: 1rem;
+        font-weight: 700;
+        margin-bottom: 0.18rem;
+    }
+    .insight-card-copy {
+        color: #b7c8d5;
+        font-size: 0.88rem;
+        line-height: 1.45;
+    }
+    .preview-section-grid {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 0.85rem;
+        margin-top: 0.85rem;
+    }
+    .preview-visual-stack {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 0.75rem;
+    }
+    .preview-notes-card {
+        background: rgba(8, 23, 37, 0.88);
+        border: 1px solid rgba(104, 144, 177, 0.18);
+        border-radius: 18px;
+        padding: 0.95rem 1rem;
+    }
+    .preview-notes-title {
+        color: #f4f8fb;
+        font-size: 0.98rem;
+        font-weight: 700;
+        margin-bottom: 0.4rem;
+    }
+    .preview-notes-copy {
+        color: #b7c8d5;
+        line-height: 1.55;
+        font-size: 0.92rem;
+    }
+    @media (max-width: 980px) {
+        .orientation-grid, .insight-grid, .preview-section-grid {
+            grid-template-columns: 1fr;
+        }
     }
     </style>
     """,
@@ -3445,6 +4849,34 @@ if active_job:
             support_strategy,
             printer_profile,
         )
+    if f"edit_profile_preset_{artifact_hash}" not in st.session_state:
+        reset_live_plan_state(
+            artifact_hash,
+            recommended_plan,
+            quality_profile,
+            print_goal,
+            support_strategy,
+            adhesion_strategy,
+            delivery_mode,
+            filament,
+            printer_profile,
+        )
+    ensure_plan_snapshot_baseline(
+        artifact_hash,
+        recommended_plan,
+        filename,
+        printer,
+        filament,
+    )
+    orientation_state_key = f"preview_orientation_{artifact_hash}"
+    if orientation_state_key not in st.session_state:
+        default_orientation = "As loaded"
+        if mesh_analysis and mesh_analysis.get("recommended_orientation_label") not in {None, "", "Unknown"}:
+            default_orientation = str(mesh_analysis.get("recommended_orientation_label"))
+        st.session_state[orientation_state_key] = default_orientation
+    saved_profile_key = f"saved_profiles_{artifact_hash}"
+    if saved_profile_key not in st.session_state:
+        st.session_state[saved_profile_key] = []
 
     st.write("")
     st.markdown(
@@ -3505,9 +4937,9 @@ if active_job:
             unsafe_allow_html=True,
         )
 
-    grouped_col1, grouped_col2 = st.columns(2, gap="medium")
-    reset_col, reset_copy_col = st.columns([0.34, 0.66], gap="medium")
-    with reset_col:
+    snapshots = list(st.session_state.get(f"plan_snapshots_{artifact_hash}", []))
+    action_col1, action_col2, action_col3, action_col4 = st.columns(4, gap="small")
+    with action_col1:
         if st.button("Reset To Recommended", use_container_width=True, key=f"reset_live_plan_{artifact_hash}"):
             reset_live_plan_state(
                 artifact_hash,
@@ -3521,8 +4953,19 @@ if active_job:
                 printer_profile,
             )
             st.rerun()
-    with reset_copy_col:
-        st.caption("Use this when you want to clear your custom edits and snap the live plan back to CipherSlice's recommended settings for this exact job.")
+    with action_col2:
+        if st.button("Save Snapshot", use_container_width=True, key=f"save_snapshot_{artifact_hash}"):
+            st.session_state[f"queue_snapshot_save_{artifact_hash}"] = "manual"
+    with action_col3:
+        if st.button("Duplicate Path", use_container_width=True, key=f"duplicate_snapshot_{artifact_hash}"):
+            st.session_state[f"queue_snapshot_save_{artifact_hash}"] = "branch"
+    with action_col4:
+        if len(snapshots) > 1 and st.button("Restore Last Snapshot", use_container_width=True, key=f"restore_snapshot_{artifact_hash}"):
+            apply_snapshot_to_state(artifact_hash, snapshots[-1])
+            st.rerun()
+    st.caption("Use these to reset, save checkpoints, branch ideas, or recover a previous tuning path without restarting the job.")
+
+    grouped_col1, grouped_col2 = st.columns(2, gap="medium")
     with grouped_col1:
         with st.container(border=True):
             st.markdown("#### Machine + Finish")
@@ -3583,6 +5026,15 @@ if active_job:
                 value=int(recommended_plan["wall_loops"]),
                 key=f"edit_walls_{artifact_hash}",
             )
+            editable_profile_preset = st.selectbox(
+                "Tuning preset",
+                ["Recommended", "Strength-first", "Quality-first", "Speed-first", "Prototype-first"],
+                index=["Recommended", "Strength-first", "Quality-first", "Speed-first", "Prototype-first"].index(
+                    str(st.session_state.get(f"edit_profile_preset_{artifact_hash}", "Recommended"))
+                ),
+                key=f"edit_profile_preset_{artifact_hash}",
+                help="Presets move multiple advanced controls together so the plan feels more like a real slicer profile family.",
+            )
     with grouped_col2:
         with st.container(border=True):
             st.markdown("#### Delivery + Release")
@@ -3617,19 +5069,55 @@ if active_job:
 
     editable_nozzle_temp = int(initial_overrides["nozzle_override"] or recommended_plan["nozzle_temp"])
     editable_bed_temp = int(initial_overrides["bed_override"] or recommended_plan["bed_temp"])
-    editable_flow = 100
-    editable_support_density = int(recommended_plan.get("support_density", 24))
-    editable_top_layers = int(recommended_plan.get("top_layers", 4))
-    editable_bottom_layers = int(recommended_plan.get("bottom_layers", 4))
-    editable_retraction_length = float(recommended_plan.get("retraction_length", 1.2))
-    editable_acceleration = int(recommended_plan.get("acceleration", 3000))
-    editable_seam_position = str(recommended_plan.get("seam_position", "Rear"))
+    editable_flow = int(st.session_state.get(f"edit_flow_{artifact_hash}", recommended_plan.get("flow_multiplier", 100)))
+    editable_support_density = int(st.session_state.get(f"edit_support_density_{artifact_hash}", recommended_plan.get("support_density", 24)))
+    editable_top_layers = int(st.session_state.get(f"edit_top_layers_{artifact_hash}", recommended_plan.get("top_layers", 4)))
+    editable_bottom_layers = int(st.session_state.get(f"edit_bottom_layers_{artifact_hash}", recommended_plan.get("bottom_layers", 4)))
+    editable_retraction_length = float(st.session_state.get(f"edit_retraction_{artifact_hash}", recommended_plan.get("retraction_length", 1.2)))
+    editable_acceleration = int(st.session_state.get(f"edit_acceleration_{artifact_hash}", recommended_plan.get("acceleration", 3000)))
+    editable_seam_position = str(st.session_state.get(f"edit_seam_{artifact_hash}", recommended_plan.get("seam_position", "Rear")))
+    editable_outer_wall_speed = int(st.session_state.get(f"edit_outer_wall_speed_{artifact_hash}", recommended_plan.get("outer_wall_speed", max(15, int(recommended_plan["print_speed"] * 0.55)))))
+    editable_inner_wall_speed = int(st.session_state.get(f"edit_inner_wall_speed_{artifact_hash}", recommended_plan.get("inner_wall_speed", max(18, int(recommended_plan["print_speed"] * 0.82)))))
+    editable_travel_speed = int(st.session_state.get(f"edit_travel_speed_{artifact_hash}", recommended_plan.get("travel_speed", min(400, int(recommended_plan["print_speed"] * 2.2)))))
+    editable_infill_pattern = str(st.session_state.get(f"edit_infill_pattern_{artifact_hash}", recommended_plan.get("infill_pattern", "Gyroid")))
+    editable_support_interface = bool(st.session_state.get(f"edit_support_interface_{artifact_hash}", recommended_plan.get("support_interface", recommended_plan.get("support_enabled", False))))
+    editable_support_pattern = str(st.session_state.get(f"edit_support_pattern_{artifact_hash}", recommended_plan.get("support_pattern", "Lines")))
+    editable_brim_width = float(st.session_state.get(f"edit_brim_width_{artifact_hash}", recommended_plan.get("brim_width", 6.0 if recommended_plan.get("adhesion") == "Brim" else 0.0)))
+    editable_skirt_loops = int(st.session_state.get(f"edit_skirt_loops_{artifact_hash}", recommended_plan.get("skirt_loops", 2)))
+    editable_first_layer_height = float(st.session_state.get(f"edit_first_layer_height_{artifact_hash}", recommended_plan.get("first_layer_height", max(float(recommended_plan["layer_height"]), round(float(recommended_plan["layer_height"]) * 1.4, 2)))))
+    editable_first_layer_speed = int(st.session_state.get(f"edit_first_layer_speed_{artifact_hash}", recommended_plan.get("first_layer_speed", max(15, int(recommended_plan["print_speed"] * 0.45)))))
+    editable_first_layer_flow = int(st.session_state.get(f"edit_first_layer_flow_{artifact_hash}", recommended_plan.get("first_layer_flow", 100)))
+    editable_jerk_control = int(st.session_state.get(f"edit_jerk_{artifact_hash}", recommended_plan.get("jerk_control", 8)))
+    editable_stability_mode = str(st.session_state.get(f"edit_stability_{artifact_hash}", recommended_plan.get("stability_mode", "Balanced")))
+    if editable_profile_preset != "Recommended" and st.session_state.get(f"edit_restore_point_{artifact_hash}") != f"Preset: {editable_profile_preset}":
+        apply_tuning_preset_to_state(artifact_hash, editable_profile_preset, recommended_plan, printer_profile)
+        st.session_state[f"edit_restore_point_{artifact_hash}"] = f"Preset: {editable_profile_preset}"
+        editable_flow = int(st.session_state.get(f"edit_flow_{artifact_hash}", editable_flow))
+        editable_support_density = int(st.session_state.get(f"edit_support_density_{artifact_hash}", editable_support_density))
+        editable_top_layers = int(st.session_state.get(f"edit_top_layers_{artifact_hash}", editable_top_layers))
+        editable_bottom_layers = int(st.session_state.get(f"edit_bottom_layers_{artifact_hash}", editable_bottom_layers))
+        editable_retraction_length = float(st.session_state.get(f"edit_retraction_{artifact_hash}", editable_retraction_length))
+        editable_acceleration = int(st.session_state.get(f"edit_acceleration_{artifact_hash}", editable_acceleration))
+        editable_seam_position = str(st.session_state.get(f"edit_seam_{artifact_hash}", editable_seam_position))
+        editable_outer_wall_speed = int(st.session_state.get(f"edit_outer_wall_speed_{artifact_hash}", editable_outer_wall_speed))
+        editable_inner_wall_speed = int(st.session_state.get(f"edit_inner_wall_speed_{artifact_hash}", editable_inner_wall_speed))
+        editable_travel_speed = int(st.session_state.get(f"edit_travel_speed_{artifact_hash}", editable_travel_speed))
+        editable_infill_pattern = str(st.session_state.get(f"edit_infill_pattern_{artifact_hash}", editable_infill_pattern))
+        editable_support_interface = bool(st.session_state.get(f"edit_support_interface_{artifact_hash}", editable_support_interface))
+        editable_support_pattern = str(st.session_state.get(f"edit_support_pattern_{artifact_hash}", editable_support_pattern))
+        editable_brim_width = float(st.session_state.get(f"edit_brim_width_{artifact_hash}", editable_brim_width))
+        editable_skirt_loops = int(st.session_state.get(f"edit_skirt_loops_{artifact_hash}", editable_skirt_loops))
+        editable_first_layer_height = float(st.session_state.get(f"edit_first_layer_height_{artifact_hash}", editable_first_layer_height))
+        editable_first_layer_speed = int(st.session_state.get(f"edit_first_layer_speed_{artifact_hash}", editable_first_layer_speed))
+        editable_first_layer_flow = int(st.session_state.get(f"edit_first_layer_flow_{artifact_hash}", editable_first_layer_flow))
+        editable_jerk_control = int(st.session_state.get(f"edit_jerk_{artifact_hash}", editable_jerk_control))
+        editable_stability_mode = str(st.session_state.get(f"edit_stability_{artifact_hash}", editable_stability_mode))
     if experience_mode == "Advanced":
         with st.expander("Advanced tuning cards"):
             st.caption(
-                "Quick guide: walls increase shell strength, top and bottom layers close surfaces, retraction helps with stringing, acceleration affects motion aggression, and seam position controls where the layer scar tends to land."
+                "Quick guide: these controls now behave more like a slicer profile editor. You can shape surface speed, first-layer behavior, support style, motion aggression, and profile personality without losing the beginner path."
             )
-            thermal_col, motion_col = st.columns(2, gap="medium")
+            thermal_col, motion_col, support_col = st.columns(3, gap="medium")
             with thermal_col:
                 with st.container(border=True):
                     st.markdown("#### Thermal tuning")
@@ -3655,13 +5143,67 @@ if active_job:
                         "Flow multiplier (%)",
                         min_value=80,
                         max_value=120,
-                        value=100,
+                        value=editable_flow,
                         help="Flow changes how much plastic is pushed. It can help tune wall fullness and fit.",
                         key=f"edit_flow_{artifact_hash}",
+                    )
+                    editable_first_layer_height = st.number_input(
+                        "First-layer height (mm)",
+                        min_value=0.08,
+                        max_value=1.0,
+                        value=editable_first_layer_height,
+                        step=0.02,
+                        format="%.2f",
+                        help="A taller first layer can forgive small bed issues, while a smaller one can preserve detail.",
+                        key=f"edit_first_layer_height_{artifact_hash}",
+                    )
+                    editable_first_layer_flow = st.slider(
+                        "First-layer flow (%)",
+                        min_value=90,
+                        max_value=120,
+                        value=editable_first_layer_flow,
+                        help="This changes how aggressively the first layer squishes into the bed.",
+                        key=f"edit_first_layer_flow_{artifact_hash}",
                     )
             with motion_col:
                 with st.container(border=True):
                     st.markdown("#### Motion + shell tuning")
+                    editable_outer_wall_speed = st.number_input(
+                        "Outer wall speed (mm/s)",
+                        min_value=10,
+                        max_value=250,
+                        value=editable_outer_wall_speed,
+                        step=1,
+                        help="Slow this down when surface quality matters more than print speed.",
+                        key=f"edit_outer_wall_speed_{artifact_hash}",
+                    )
+                    editable_inner_wall_speed = st.number_input(
+                        "Inner wall speed (mm/s)",
+                        min_value=10,
+                        max_value=300,
+                        value=editable_inner_wall_speed,
+                        step=1,
+                        help="Inner walls can usually move faster than the visible outer shell.",
+                        key=f"edit_inner_wall_speed_{artifact_hash}",
+                    )
+                    editable_travel_speed = st.number_input(
+                        "Travel speed (mm/s)",
+                        min_value=20,
+                        max_value=500,
+                        value=editable_travel_speed,
+                        step=5,
+                        help="Faster travel saves time, but can increase shake and stringing.",
+                        key=f"edit_travel_speed_{artifact_hash}",
+                    )
+                    editable_first_layer_speed = st.number_input(
+                        "First-layer speed (mm/s)",
+                        min_value=5,
+                        max_value=120,
+                        value=editable_first_layer_speed,
+                        step=1,
+                        help="This is one of the strongest first-layer reliability levers.",
+                        key=f"edit_first_layer_speed_{artifact_hash}",
+                    )
                     editable_support_density = st.slider(
                         "Support density target (%)",
                         min_value=0,
@@ -3669,6 +5211,29 @@ if active_job:
                         value=editable_support_density,
                         help="Higher support density is stronger and easier to print over, but slower and harder to remove.",
                         key=f"edit_support_density_{artifact_hash}",
+                    )
+                    editable_support_interface = st.checkbox(
+                        "Use support interface layers",
+                        value=editable_support_interface,
+                        help="Interface layers can improve the underside finish on supported surfaces.",
+                        key=f"edit_support_interface_{artifact_hash}",
+                    )
+                    editable_support_pattern = st.selectbox(
+                        "Support pattern",
+                        ["Lines", "Grid", "Zig-zag"],
+                        index=["Lines", "Grid", "Zig-zag"].index(editable_support_pattern if editable_support_pattern in {"Lines", "Grid", "Zig-zag"} else "Lines"),
+                        help="Pattern changes support strength and peel-away behavior.",
+                        key=f"edit_support_pattern_{artifact_hash}",
+                    )
+            with support_col:
+                with st.container(border=True):
+                    st.markdown("#### Surface + structure")
+                    editable_infill_pattern = st.selectbox(
+                        "Infill pattern",
+                        ["Gyroid", "Grid", "Lines", "Cubic"],
+                        index=["Gyroid", "Grid", "Lines", "Cubic"].index(editable_infill_pattern if editable_infill_pattern in {"Gyroid", "Grid", "Lines", "Cubic"} else "Gyroid"),
+                        help="Pattern changes strength feel, print rhythm, and material behavior.",
+                        key=f"edit_infill_pattern_{artifact_hash}",
                     )
                     editable_top_layers = st.slider(
                         "Top solid layers",
@@ -3685,6 +5250,24 @@ if active_job:
                         value=editable_bottom_layers,
                         help="More bottom layers can improve floor strength and first-layer stability.",
                         key=f"edit_bottom_layers_{artifact_hash}",
+                    )
+                    editable_brim_width = st.number_input(
+                        "Brim width (mm)",
+                        min_value=0.0,
+                        max_value=20.0,
+                        value=editable_brim_width,
+                        step=0.5,
+                        format="%.1f",
+                        help="Brim width matters most on tall, narrow, or warp-prone parts.",
+                        key=f"edit_brim_width_{artifact_hash}",
+                    )
+                    editable_skirt_loops = st.slider(
+                        "Skirt loops",
+                        min_value=0,
+                        max_value=10,
+                        value=editable_skirt_loops,
+                        help="Skirts help prime the nozzle and settle the flow before the real part starts.",
+                        key=f"edit_skirt_loops_{artifact_hash}",
                     )
                     editable_retraction_length = st.number_input(
                         "Retraction length (mm)",
@@ -3705,12 +5288,28 @@ if active_job:
                         help="Higher acceleration can shorten print time, but it can also increase ringing and motion stress.",
                         key=f"edit_acceleration_{artifact_hash}",
                     )
+                    editable_jerk_control = st.number_input(
+                        "Jerk control",
+                        min_value=1,
+                        max_value=30,
+                        value=editable_jerk_control,
+                        step=1,
+                        help="This changes how abruptly the machine tries to change direction.",
+                        key=f"edit_jerk_{artifact_hash}",
+                    )
                     editable_seam_position = st.selectbox(
                         "Seam position",
                         ["Rear", "Aligned", "Nearest", "Random"],
                         index=["Rear", "Aligned", "Nearest", "Random"].index(editable_seam_position if editable_seam_position in {"Rear", "Aligned", "Nearest", "Random"} else "Rear"),
                         help="This changes where layer-start scars tend to collect on the outside of the part.",
                         key=f"edit_seam_{artifact_hash}",
+                    )
+                    editable_stability_mode = st.selectbox(
+                        "Stability mode",
+                        ["Balanced", "Stable", "Surface-first", "Fast", "Prototype"],
+                        index=["Balanced", "Stable", "Surface-first", "Fast", "Prototype"].index(editable_stability_mode if editable_stability_mode in {"Balanced", "Stable", "Surface-first", "Fast", "Prototype"} else "Balanced"),
+                        help="This helps explain whether the current plan leans toward safety, finish, or speed.",
+                        key=f"edit_stability_{artifact_hash}",
                     )
                     st.markdown(f"- **Placement suggestion:** {printer_profile['orientation']}")
                     st.markdown(f"- **Nozzle diameter:** `{printer_profile['nozzle_diameter']} mm`")
@@ -3749,6 +5348,20 @@ if active_job:
     optimized_plan["retraction_length"] = round(editable_retraction_length, 1)
     optimized_plan["acceleration"] = editable_acceleration
     optimized_plan["seam_position"] = editable_seam_position
+    optimized_plan["outer_wall_speed"] = editable_outer_wall_speed
+    optimized_plan["inner_wall_speed"] = editable_inner_wall_speed
+    optimized_plan["travel_speed"] = editable_travel_speed
+    optimized_plan["infill_pattern"] = editable_infill_pattern
+    optimized_plan["support_interface"] = editable_support_interface
+    optimized_plan["support_pattern"] = editable_support_pattern
+    optimized_plan["brim_width"] = round(editable_brim_width, 1)
+    optimized_plan["skirt_loops"] = editable_skirt_loops
+    optimized_plan["first_layer_height"] = round(editable_first_layer_height, 2)
+    optimized_plan["first_layer_speed"] = editable_first_layer_speed
+    optimized_plan["first_layer_flow"] = editable_first_layer_flow
+    optimized_plan["jerk_control"] = editable_jerk_control
+    optimized_plan["stability_mode"] = editable_stability_mode
+    optimized_plan["profile_preset"] = editable_profile_preset
     optimized_plan["gcode_flavor"] = editable_gcode_flavor
     quality_profile = editable_quality_profile
     print_goal = editable_print_goal
@@ -3756,6 +5369,37 @@ if active_job:
     adhesion_strategy = editable_adhesion_strategy
     delivery_mode = editable_delivery_mode
     optimized_plan["delivery_mode"] = delivery_mode
+    recommended_plan.update(extract_plan_controls(recommended_plan))
+    optimized_plan.update(extract_plan_controls(optimized_plan))
+    queued_snapshot_reason = st.session_state.pop(f"queue_snapshot_save_{artifact_hash}", None)
+    if queued_snapshot_reason:
+        snapshot_count = len(st.session_state.get(f"plan_snapshots_{artifact_hash}", []))
+        snapshot_label = (
+            f"Branch path {snapshot_count + 1}"
+            if queued_snapshot_reason == "branch"
+            else f"Saved snapshot {snapshot_count + 1}"
+        )
+        save_plan_snapshot(
+            artifact_hash,
+            snapshot_label,
+            filename,
+            printer,
+            filament,
+            optimized_plan,
+            str(queued_snapshot_reason),
+        )
+        st.session_state[f"edit_restore_point_{artifact_hash}"] = snapshot_label
+    snapshot_labels_now = [str(snapshot.get("label")) for snapshot in st.session_state.get(f"plan_snapshots_{artifact_hash}", [])]
+    if "Geometry-reviewed live plan" not in snapshot_labels_now:
+        save_plan_snapshot(
+            artifact_hash,
+            "Geometry-reviewed live plan",
+            filename,
+            printer,
+            filament,
+            optimized_plan,
+            "restore-point",
+        )
 
     job_context = build_job_context(
         mode,
@@ -3957,6 +5601,19 @@ if active_job:
             st.warning(f"Review check held this job at {overall_confidence * 100:.1f}% confidence. More setup or review is required.")
         status.update(label="Print plan ready for review", state="complete", expanded=True)
 
+    if mode == "Reliable Print Mode":
+        snapshots = list(st.session_state.get(f"plan_snapshots_{artifact_hash}", []))
+        st.markdown(
+            "<div class='review-header-grid'>"
+            f"<div class='review-header-card'><div class='review-header-title'>Part</div><div class='review-header-value'>{filename}</div><div class='review-header-copy'>{format_bytes(file_size)} uploaded and mapped into the live planning chain.</div></div>"
+            f"<div class='review-header-card'><div class='review-header-title'>Printer</div><div class='review-header-value'>{printer}</div><div class='review-header-copy'>{printer_profile.get('family', 'Unknown family')}<br/>{printer_profile.get('bed_shape_type', 'Rectangular')} bed</div></div>"
+            f"<div class='review-header-card'><div class='review-header-title'>Material</div><div class='review-header-value'>{filament}</div><div class='review-header-copy'>{optimized_plan['nozzle_temp']} degC nozzle / {optimized_plan['bed_temp']} degC bed</div></div>"
+            f"<div class='review-header-card'><div class='review-header-title'>Plan state</div><div class='review-header-value'>{'Printer-ready path' if slicer_path else 'Planning preview'}</div><div class='review-header-copy'>{'Real slicing is connected.' if slicer_path else 'A slicer backend still needs to be connected.'}</div></div>"
+            f"<div class='review-header-card'><div class='review-header-title'>Review gate</div><div class='review-header-value'>{overall_confidence * 100:.0f}%</div><div class='review-header-copy'>{len(objections)} blockers / {len(snapshots)} saved snapshots</div></div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
     result_col, code_col = st.columns([0.9, 1.1], gap="large")
     final_user_approval = bool(st.session_state.get(approval_key, False))
     next_action = recommend_next_action(
@@ -4024,7 +5681,23 @@ if active_job:
         is_production_print_file,
     )
     plan_change_cards = build_plan_change_cards(recommended_plan, optimized_plan) if mode == "Reliable Print Mode" else []
+    plan_change_summary = build_plan_change_summary(plan_change_cards) if mode == "Reliable Print Mode" else []
+    plan_tradeoff_estimate = build_plan_tradeoff_estimate(recommended_plan, optimized_plan) if mode == "Reliable Print Mode" else []
     slicer_transition_notes = build_slicer_transition_notes(slicer_path, is_production_print_file) if mode == "Reliable Print Mode" else []
+    geometry_fix_actions = build_geometry_fix_actions(mesh_analysis) if mode == "Reliable Print Mode" else []
+    slicer_capability_report = build_slicer_capability_report(slicer_label, slicer_path, printer_profile, optimized_plan) if mode == "Reliable Print Mode" else []
+    slicer_decision_notes = build_slicer_decision_notes(optimized_plan, mesh_analysis) if mode == "Reliable Print Mode" else []
+    handoff_audit_trail = build_handoff_audit_trail(
+        filename,
+        artifact_hash,
+        printer,
+        filament,
+        delivery_mode,
+        optimized_plan,
+        mesh_analysis,
+        overall_confidence,
+        objections,
+    ) if mode == "Reliable Print Mode" else None
 
     with result_col:
         st.markdown('<div class="panel-card">', unsafe_allow_html=True)
@@ -4044,6 +5717,15 @@ if active_job:
                     st.write("A connected printer is optional for now. You only need hardware later when you want to physically run the approved print.")
                 else:
                     st.write("A real slicer backend still needs to be connected. That is the main reason the preview stays in planning mode instead of full production output.")
+        review_area = "Overview"
+        if mode == "Reliable Print Mode":
+            review_area = st.radio(
+                "Review workspace",
+                ["Overview", "Fit + 3D", "Tuning", "Compare", "Release"],
+                horizontal=True,
+                key=f"review_workspace_{artifact_hash}",
+            )
+            st.caption("This keeps the workflow in focused sections so the page feels more like a workspace and less like one long report.")
         st.markdown(
             f"""
             <div class="ops-grid">
@@ -4060,102 +5742,117 @@ if active_job:
             """,
             unsafe_allow_html=True,
         )
-        with st.container(border=True):
-            st.markdown('<div class="review-section"><div class="review-kicker">Readiness</div><div class="review-copy">This section tells the user what CipherSlice can genuinely do right now, before any printer promises get implied.</div>', unsafe_allow_html=True)
-            st.markdown("#### What This Can Do Right Now")
-            for label, value in pre_printer_checklist:
-                st.markdown(f"- **{label}:** `{value}`")
-            if not slicer_path and mode == "Reliable Print Mode":
-                st.caption(
-                    "Plain English: CipherSlice can inspect and plan the print today, but it should not claim real production G-code until a slicer engine is connected."
+        if mode != "Reliable Print Mode" or review_area == "Overview":
+            with st.container(border=True):
+                st.markdown('<div class="review-section"><div class="review-kicker">Readiness</div><div class="review-copy">This section tells the user what CipherSlice can genuinely do right now, before any printer promises get implied.</div>', unsafe_allow_html=True)
+                st.markdown("#### What This Can Do Right Now")
+                for label, value in pre_printer_checklist:
+                    st.markdown(f"- **{label}:** `{value}`")
+                if not slicer_path and mode == "Reliable Print Mode":
+                    st.caption(
+                        "Plain English: CipherSlice can inspect and plan the print today, but it should not claim real production G-code until a slicer engine is connected."
+                    )
+                st.markdown("</div>", unsafe_allow_html=True)
+        if mode != "Reliable Print Mode" or review_area == "Overview":
+            with st.container(border=True):
+                st.markdown('<div class="review-section"><div class="review-kicker">Confidence</div><div class="review-copy">This is the software review score for the current job. The most cautious review role can hold the whole chain back.</div>', unsafe_allow_html=True)
+                st.markdown("#### What Confidence Means")
+                st.markdown(
+                    "<div class='confidence-grid'>"
+                    f"<div class='confidence-card'><div class='confidence-card-title'>Current score</div><div class='confidence-card-value'>{overall_confidence * 100:.0f}%</div><div class='review-header-copy'>CipherSlice's software-side trust score for this job.</div></div>"
+                f"<div class='confidence-card'><div class='confidence-card-title'>Release bar</div><div class='confidence-card-value'>94%</div><div class='review-header-copy'>The software threshold required before CipherSlice can claim a production-ready release.</div></div>"
+                f"<div class='confidence-card'><div class='confidence-card-title'>Active blockers</div><div class='confidence-card-value'>{len(objections)}</div><div class='review-header-copy'>{'The chain is clear right now.' if not objections else 'At least one review role is still holding the chain.'}</div></div>"
+                "</div>",
+                unsafe_allow_html=True,
                 )
-            st.markdown("</div>", unsafe_allow_html=True)
-        with st.container(border=True):
-            st.markdown('<div class="review-section"><div class="review-kicker">Confidence</div><div class="review-copy">This is the software review score for the current job. The most cautious review role can hold the whole chain back.</div>', unsafe_allow_html=True)
-            st.markdown("#### What Confidence Means")
-            for note in confidence_notes:
-                st.markdown(f"- {note}")
-            st.markdown("</div>", unsafe_allow_html=True)
+                for note in confidence_notes:
+                    st.markdown(f"- {note}")
+                st.markdown("</div>", unsafe_allow_html=True)
         if mode == "Reliable Print Mode":
-            with st.container(border=True):
-                st.markdown('<div class="review-section"><div class="review-kicker">Machine Fit</div><div class="review-copy">This section explains how the selected printer itself shapes the safe print strategy before any slicer or hardware handoff happens.</div>', unsafe_allow_html=True)
-                st.markdown("#### Printer + Material Reality Check")
-                machine_col1, machine_col2 = st.columns(2, gap="medium")
-                with machine_col1:
-                    for label, value in machine_profile_notes:
-                        st.markdown(f"- **{label}:** `{value}`")
-                with machine_col2:
-                    st.markdown("**Why CipherSlice is being careful**")
+            if review_area == "Overview":
+                with st.container(border=True):
+                    st.markdown('<div class="review-section"><div class="review-kicker">Machine Fit</div><div class="review-copy">This section explains how the selected printer itself shapes the safe print strategy before any slicer or hardware handoff happens.</div>', unsafe_allow_html=True)
+                    st.markdown("#### Printer + Material Reality Check")
+                    machine_col1, machine_col2 = st.columns(2, gap="medium")
+                    with machine_col1:
+                        for label, value in machine_profile_notes:
+                            st.markdown(f"- **{label}:** `{value}`")
+                    with machine_col2:
+                        st.markdown("**Why CipherSlice is being careful**")
+                        for note in printer_material_notes:
+                            st.markdown(f"- {note}")
+                    st.markdown("</div>", unsafe_allow_html=True)
+                build_x, build_y, build_z = parse_bed_dimensions(printer_profile)
+                fit_title, fit_copy = summarize_fit(mesh_analysis, printer_profile)
+                with st.container(border=True):
+                    st.markdown('<div class="review-section"><div class="review-kicker">Quick Summary</div><div class="review-copy">A fast read of the current job, without making the user scan a long checklist.</div>', unsafe_allow_html=True)
+                    st.markdown("#### At a Glance")
+                    st.caption(f"Built in `{persona['label']}` tone.")
+                    st.markdown(
+                        f"""
+                        <div class="glance-grid">
+                            <div class="glance-card">
+                                <div class="glance-label">Printer</div>
+                                <div class="glance-value">{printer}</div>
+                                <div class="glance-note">{printer_profile.get('family', 'Unknown')}</div>
+                            </div>
+                            <div class="glance-card">
+                                <div class="glance-label">Material</div>
+                                <div class="glance-value">{filament}</div>
+                                <div class="glance-note">{optimized_plan['nozzle_temp']} degC nozzle / {optimized_plan['bed_temp']} degC bed</div>
+                            </div>
+                            <div class="glance-card">
+                                <div class="glance-label">Output</div>
+                                <div class="glance-value">{output_type_title}</div>
+                                <div class="glance-note">{connection_title}</div>
+                            </div>
+                            <div class="glance-card">
+                                <div class="glance-label">Confidence</div>
+                                <div class="glance-value">{overall_confidence * 100:.0f}%</div>
+                                <div class="glance-note">Lowest review role sets the final score</div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        "<div class='metric-chip-row'>"
+                        f"<span class='metric-chip'><strong>Layer / infill / walls:</strong> {optimized_plan['layer_height']} mm / {optimized_plan['infill_percent']}% / {optimized_plan['wall_loops']}</span>"
+                        f"<span class='metric-chip'><strong>Support / adhesion:</strong> {'Enabled' if optimized_plan['support_enabled'] else 'Disabled'} / {optimized_plan['adhesion']}</span>"
+                        f"<span class='metric-chip'><strong>Delivery path:</strong> {delivery_mode}</span>"
+                        f"<span class='metric-chip'><strong>Job mode:</strong> {execution_label}</span>"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(printer_profile.get("printer_note", ""))
+                    st.caption(guidance_copy)
+                    st.caption(connection_copy)
                     for note in printer_material_notes:
-                        st.markdown(f"- {note}")
-                st.markdown("</div>", unsafe_allow_html=True)
-            build_x, build_y, build_z = parse_bed_dimensions(printer_profile)
-            fit_title, fit_copy = summarize_fit(mesh_analysis, printer_profile)
-            with st.container(border=True):
-                st.markdown('<div class="review-section"><div class="review-kicker">Quick Summary</div><div class="review-copy">A fast read of the current job, without making the user scan a long checklist.</div>', unsafe_allow_html=True)
-                st.markdown("#### At a Glance")
-                st.caption(f"Built in `{persona['label']}` tone.")
-                st.markdown(
-                    f"""
-                    <div class="glance-grid">
-                        <div class="glance-card">
-                            <div class="glance-label">Printer</div>
-                            <div class="glance-value">{printer}</div>
-                            <div class="glance-note">{printer_profile.get('family', 'Unknown')}</div>
-                        </div>
-                        <div class="glance-card">
-                            <div class="glance-label">Material</div>
-                            <div class="glance-value">{filament}</div>
-                            <div class="glance-note">{optimized_plan['nozzle_temp']} degC nozzle / {optimized_plan['bed_temp']} degC bed</div>
-                        </div>
-                        <div class="glance-card">
-                            <div class="glance-label">Output</div>
-                            <div class="glance-value">{output_type_title}</div>
-                            <div class="glance-note">{connection_title}</div>
-                        </div>
-                        <div class="glance-card">
-                            <div class="glance-label">Confidence</div>
-                            <div class="glance-value">{overall_confidence * 100:.0f}%</div>
-                            <div class="glance-note">Lowest review role sets the final score</div>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    "<div class='metric-chip-row'>"
-                    f"<span class='metric-chip'><strong>Layer / infill / walls:</strong> {optimized_plan['layer_height']} mm / {optimized_plan['infill_percent']}% / {optimized_plan['wall_loops']}</span>"
-                    f"<span class='metric-chip'><strong>Support / adhesion:</strong> {'Enabled' if optimized_plan['support_enabled'] else 'Disabled'} / {optimized_plan['adhesion']}</span>"
-                    f"<span class='metric-chip'><strong>Delivery path:</strong> {delivery_mode}</span>"
-                    f"<span class='metric-chip'><strong>Job mode:</strong> {execution_label}</span>"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-                st.caption(printer_profile.get("printer_note", ""))
-                st.caption(guidance_copy)
-                st.caption(connection_copy)
-                for note in printer_material_notes:
-                    st.caption(note)
-                st.markdown("</div>", unsafe_allow_html=True)
+                        st.caption(note)
+                    st.markdown("</div>", unsafe_allow_html=True)
 
-            with st.container(border=True):
-                st.markdown('<div class="review-section"><div class="review-kicker">Fit Preview</div><div class="review-copy">A visual sizing check so users can understand bed fit before digging into deeper tuning.</div>', unsafe_allow_html=True)
-                st.markdown("#### Bed + Size Preview")
-                preview_visual_col, preview_data_col = st.columns([1.15, 0.85], gap="medium")
-                with preview_visual_col:
+            if review_area == "Fit + 3D":
+                with st.container(border=True):
+                    st.markdown('<div class="review-section"><div class="review-kicker">Fit Preview</div><div class="review-copy">A visual sizing check so users can understand bed fit before digging into deeper tuning.</div>', unsafe_allow_html=True)
+                    st.markdown("#### Print Fit Studio")
+                    st.markdown("<div class='preview-section-grid'><div class='preview-visual-stack'>", unsafe_allow_html=True)
                     st.markdown(build_bed_preview_svg(mesh_analysis, printer_profile), unsafe_allow_html=True)
                     st.markdown(build_model_shape_preview_svg(mesh_analysis), unsafe_allow_html=True)
-                with preview_data_col:
-                    st.markdown(f"- **Printer volume (X/Y/Z):** `{format_xyz_dims(build_x, build_y, build_z)}`")
+                    st.markdown("</div><div class='preview-notes-card'>", unsafe_allow_html=True)
+                    st.markdown("<div class='preview-notes-title'>Fit Notes</div>", unsafe_allow_html=True)
+                    st.markdown("<div class='preview-notes-copy'>", unsafe_allow_html=True)
+                    st.markdown(
+                        f"**Printer volume (X/Y/Z):** `{format_xyz_dims(build_x, build_y, build_z)}`"
+                    )
                     if mesh_analysis and mesh_analysis.get("scaled_extents_mm"):
                         px, py, pz = mesh_analysis["scaled_extents_mm"]
-                        st.markdown(f"- **Part size (X/Y/Z):** `{format_xyz_dims(px, py, pz)}`")
+                        st.markdown(f"**Part size (X/Y/Z):** `{format_xyz_dims(px, py, pz)}`")
                     elif mesh_analysis and mesh_analysis.get("extents_mm"):
                         px, py, pz = mesh_analysis["extents_mm"]
-                        st.markdown(f"- **Part size (X/Y/Z):** `{format_xyz_dims(px, py, pz)}`")
+                        st.markdown(f"**Part size (X/Y/Z):** `{format_xyz_dims(px, py, pz)}`")
                     else:
-                        st.markdown("- **Part size (X/Y/Z):** `Pending mesh analysis`")
-                    st.markdown(f"- **Fit state:** `{fit_title}`")
+                        st.markdown("**Part size (X/Y/Z):** `Pending mesh analysis`")
+                    st.markdown(f"**Fit state:** `{fit_title}`")
                     st.caption(fit_copy)
                     preview_metrics = build_mesh_preview_metrics(mesh_analysis, printer_profile)
                     st.markdown(
@@ -4168,113 +5865,359 @@ if active_job:
                         unsafe_allow_html=True,
                     )
                     if mesh_analysis and mesh_analysis.get("geometry_profile"):
-                        st.markdown(f"- **Geometry profile:** `{mesh_analysis['geometry_profile']}`")
-                    for adaptive_note in (mesh_analysis or {}).get("adaptive_notes", []):
+                        st.markdown(f"**Geometry profile:** `{mesh_analysis['geometry_profile']}`")
+                    if mesh_analysis and mesh_analysis.get("adhesion_hint"):
+                        st.markdown(f"**Bed grip hint:** `{mesh_analysis['adhesion_hint']}`")
+                    if mesh_analysis and mesh_analysis.get("support_density_hint"):
+                        st.markdown(f"**Support hint:** `{mesh_analysis['support_density_hint']}`")
+                    for adaptive_note in (mesh_analysis or {}).get("adaptive_notes", [])[:3]:
                         st.caption(adaptive_note)
-                st.markdown("</div>", unsafe_allow_html=True)
+                    st.markdown("</div></div></div>", unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
 
-            with st.container(border=True):
-                st.markdown('<div class="review-section"><div class="review-kicker">Geometry Review</div><div class="review-copy">This section explains how healthy the mesh looks, how it fits the machine, and why CipherSlice trusts or questions the geometry.</div>', unsafe_allow_html=True)
-                st.markdown("#### Geometry Intelligence")
-                geo_col1, geo_col2 = st.columns([0.9, 1.1], gap="medium")
-                with geo_col1:
-                    for label, value in build_geometry_intelligence(mesh_analysis, printer_profile):
-                        st.markdown(f"- **{label}:** `{value}`")
-                    if mesh_analysis and mesh_analysis.get("scaled_extents_mm"):
-                        part_x, part_y, part_z = mesh_analysis["scaled_extents_mm"]
-                        st.markdown(
-                            f"- **Dimensions (X/Y/Z):** `{format_xyz_dims(part_x, part_y, part_z)}`"
-                        )
-                with geo_col2:
-                    if mesh_analysis and mesh_analysis.get("scale_factor") and float(mesh_analysis["scale_factor"]) != 1.0:
-                        st.info(
-                            f"CipherSlice applied a scale correction of `{float(mesh_analysis['scale_factor']):.2f}x` so the model could be reviewed against the selected printer more realistically."
-                        )
-                    if mesh_analysis and mesh_analysis.get("issues"):
-                        st.markdown("**Blockers**")
-                        for issue in mesh_analysis["issues"]:
-                            st.markdown(f"- {issue}")
-                    if mesh_analysis and mesh_analysis.get("warning_issues"):
-                        st.markdown("**Cautions**")
-                        for issue in mesh_analysis["warning_issues"]:
-                            st.markdown(f"- {issue}")
-                    if mesh_analysis and mesh_analysis.get("healthy_signals"):
-                        st.markdown("**Healthy signals**")
-                        for signal in mesh_analysis["healthy_signals"]:
-                            st.markdown(f"- {signal}")
-                    elif not (mesh_analysis and mesh_analysis.get("issues")):
-                        st.markdown("**What looks healthy**")
-                        st.markdown("- No major geometry blockers are active in the current software review.")
-                    for note in (mesh_analysis or {}).get("notes", []):
-                        st.caption(note)
-                st.markdown("</div>", unsafe_allow_html=True)
-            st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-            with st.container(border=True):
-                st.markdown("#### Plan")
-                st.markdown(
-                    f"""
-                    - **Source file:** `{filename}`
-                    - **File size:** `{format_bytes(file_size)}`
-                    - **Job mode:** `{execution_label}`
-                    - **Guidance engine:** `{guidance_title}`
-                    - **Printer profile:** `{printer}`
-                    - **Filament strategy:** `{filament}`
-                    - **Build volume (X/Y/Z):** `{format_xyz_dims(build_x, build_y, build_z)}`
-                    - **Nozzle / bed:** `{optimized_plan['nozzle_temp']} degC / {optimized_plan['bed_temp']} degC`
-                    - **Layer height / infill:** `{optimized_plan['layer_height']} mm / {optimized_plan['infill_percent']}%`
-                    - **Wall loops / speed:** `{optimized_plan['wall_loops']} / {optimized_plan['print_speed']} mm/s`
-                    - **Top / bottom layers:** `{optimized_plan.get('top_layers', 4)} / {optimized_plan.get('bottom_layers', 4)}`
-                    - **Retraction / acceleration:** `{optimized_plan.get('retraction_length', 1.2)} mm / {optimized_plan.get('acceleration', 3000)} mm/s^2`
-                    - **Seam position:** `{optimized_plan.get('seam_position', 'Rear')}`
-                    - **Supports:** `{'Enabled' if optimized_plan['support_enabled'] else 'Disabled'}`
-                    - **Adhesion / nozzle:** `{optimized_plan['adhesion']} / {optimized_plan['nozzle_diameter']} mm`
-                    """
-                )
-                st.markdown(
-                    "<div class='metric-chip-row'>"
-                    f"<span class='metric-chip'><strong>Output:</strong> {output_type_title}</span>"
-                    f"<span class='metric-chip'><strong>Engine:</strong> {connection_title}</span>"
-                    f"<span class='metric-chip'><strong>Guidance:</strong> {guidance_title}</span>"
-                    f"<span class='metric-chip'><strong>Confidence:</strong> {overall_confidence * 100:.0f}%</span>"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-            with st.container(border=True):
-                st.markdown("#### Warnings")
-                if objections:
-                    for reason in objections:
-                        st.markdown(f"- {reason}")
-                else:
-                    st.success("No blocking warnings are active for the current live plan.")
-                if mesh_analysis and mesh_analysis.get("adaptive_notes"):
-                    st.caption("Model-specific guidance:")
-                    for adaptive_note in mesh_analysis["adaptive_notes"]:
-                        st.markdown(f"- {adaptive_note}")
-            with st.container(border=True):
-                st.markdown('<div class="review-section"><div class="review-kicker">Editable Planning</div><div class="review-copy">These are the places where the live plan moved away from CipherSlice\'s first recommendation, along with what that tradeoff usually means.</div>', unsafe_allow_html=True)
-                st.markdown("#### Plan Changes")
-                if plan_change_cards:
-                    st.caption("These settings differ from CipherSlice's first recommendation for this job.")
+            if review_area == "Fit + 3D":
+                with st.container(border=True):
+                    st.markdown('<div class="review-section"><div class="review-kicker">3D Inspection</div><div class="review-copy">This is the first true interactive part view in CipherSlice. Users can orbit the model, inspect scale and shape, and then compare orientation suggestions before trusting the plan.</div>', unsafe_allow_html=True)
+                    st.markdown("#### Interactive Part View")
+                    preview_angle = st.selectbox(
+                        "3D preview camera",
+                        ["Isometric", "Top", "Front", "Side"],
+                        index=0,
+                        key=f"preview_angle_{artifact_hash}",
+                    )
+                    current_orientation_label = str(st.session_state.get(orientation_state_key, "As loaded"))
+                    render_interactive_mesh_preview(
+                        mesh_analysis,
+                        printer_profile,
+                        preview_angle,
+                        current_orientation_label,
+                        str(optimized_plan.get("seam_position", "Rear")),
+                        f"mesh_preview_{artifact_hash}",
+                    )
+                    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+                    st.markdown("#### Orientation Suggestions")
+                    if mesh_analysis and mesh_analysis.get("orientation_shift_note"):
+                        st.info(str(mesh_analysis["orientation_shift_note"]))
                     st.markdown(
-                        "<div class='change-grid'>"
-                        + "".join(
-                            f"<div class='change-card{' change-card-risk' if card['risk'] in {'watch closely', 'tuning-sensitive'} else ''}'>"
-                            f"<div class='change-name'>{card['label']}</div>"
-                            f"<div class='change-meta'>Recommended: <strong>{card['recommended']}</strong><br>Current: <strong>{card['current']}</strong><br>{card['reason']}</div>"
-                            f"<div class='change-risk'>{card['risk']}</div>"
-                            f"</div>"
-                            for card in plan_change_cards
-                        )
-                        + "</div>",
+                        build_orientation_candidate_preview((mesh_analysis or {}).get("orientation_candidates", [])),
                         unsafe_allow_html=True,
                     )
-                elif plan_diff_lines:
-                    for diff_line in plan_diff_lines:
-                        st.markdown(f"- {diff_line}")
-                else:
-                    st.success("The current live plan still matches the recommended defaults.")
-                st.markdown("</div>", unsafe_allow_html=True)
-            if mode == "Reliable Print Mode":
+                    orientation_candidates = list((mesh_analysis or {}).get("orientation_candidates", []))
+                    if orientation_candidates:
+                        st.caption("Click a posture below to make the 3D preview inspect that print direction.")
+                        orientation_cols = st.columns(len(orientation_candidates), gap="small")
+                        for column, candidate in zip(orientation_cols, orientation_candidates):
+                            with column:
+                                if st.button(
+                                    f"View {candidate['label']}",
+                                    use_container_width=True,
+                                    key=f"orientation_focus_{artifact_hash}_{candidate['label']}",
+                                    type="primary" if current_orientation_label == candidate["label"] else "secondary",
+                                ):
+                                    st.session_state[orientation_state_key] = str(candidate["label"])
+                                    st.rerun()
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+            if review_area == "Fit + 3D":
+                with st.container(border=True):
+                    st.markdown('<div class="review-section"><div class="review-kicker">Geometry Review</div><div class="review-copy">This section explains how healthy the mesh looks, how it fits the machine, and why CipherSlice trusts or questions the geometry.</div>', unsafe_allow_html=True)
+                    st.markdown("#### Shape Health Review")
+                    if mesh_analysis:
+                        st.markdown(
+                            "<div class='insight-grid'>"
+                            f"<div class='insight-card'><div class='insight-card-title'>Recommended orientation</div><div class='insight-card-value'>{mesh_analysis.get('recommended_orientation_label', 'Pending')}</div><div class='insight-card-copy'>{mesh_analysis.get('orientation_shift_note', 'CipherSlice will suggest a safer print posture here when geometry review is ready.')}</div></div>"
+                            f"<div class='insight-card'><div class='insight-card-title'>Support density hint</div><div class='insight-card-value'>{mesh_analysis.get('support_density_hint', 'Pending')}</div><div class='insight-card-copy'>This is the geometry-driven support starting point before you fine-tune the live plan.</div></div>"
+                            f"<div class='insight-card'><div class='insight-card-title'>Bed adhesion hint</div><div class='insight-card-value'>{mesh_analysis.get('adhesion_hint', 'Pending')}</div><div class='insight-card-copy'>This is CipherSlice’s current read on how much first-layer help the part probably needs.</div></div>"
+                            "</div>",
+                            unsafe_allow_html=True,
+                        )
+                    geo_col1, geo_col2 = st.columns([0.9, 1.1], gap="medium")
+                    with geo_col1:
+                        for label, value in build_geometry_intelligence(mesh_analysis, printer_profile):
+                            st.markdown(f"- **{label}:** `{value}`")
+                        if mesh_analysis and mesh_analysis.get("scaled_extents_mm"):
+                            part_x, part_y, part_z = mesh_analysis["scaled_extents_mm"]
+                            st.markdown(
+                                f"- **Dimensions (X/Y/Z):** `{format_xyz_dims(part_x, part_y, part_z)}`"
+                            )
+                    with geo_col2:
+                        if mesh_analysis and mesh_analysis.get("scale_factor") and float(mesh_analysis["scale_factor"]) != 1.0:
+                            st.info(
+                                f"CipherSlice applied a scale correction of `{float(mesh_analysis['scale_factor']):.2f}x` so the model could be reviewed against the selected printer more realistically."
+                            )
+                        if mesh_analysis and mesh_analysis.get("issues"):
+                            st.markdown("**Blockers**")
+                            for issue in mesh_analysis["issues"]:
+                                st.markdown(f"- {issue}")
+                        if mesh_analysis and mesh_analysis.get("warning_issues"):
+                            st.markdown("**Cautions**")
+                            for issue in mesh_analysis["warning_issues"]:
+                                st.markdown(f"- {issue}")
+                        if mesh_analysis and mesh_analysis.get("healthy_signals"):
+                            st.markdown("**Healthy signals**")
+                            for signal in mesh_analysis["healthy_signals"]:
+                                st.markdown(f"- {signal}")
+                        elif not (mesh_analysis and mesh_analysis.get("issues")):
+                            st.markdown("**What looks healthy**")
+                            st.markdown("- No major geometry blockers are active in the current software review.")
+                        st.markdown("**Best recovery moves**")
+                        for action in geometry_fix_actions:
+                            st.markdown(f"- {action}")
+                        for note in (mesh_analysis or {}).get("notes", []):
+                            st.caption(note)
+                        st.markdown("</div>", unsafe_allow_html=True)
+            if review_area == "Overview":
+                st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+            if review_area == "Overview":
+                with st.container(border=True):
+                    st.markdown("#### Plan")
+                    st.markdown(
+                        f"""
+                        - **Source file:** `{filename}`
+                        - **File size:** `{format_bytes(file_size)}`
+                        - **Job mode:** `{execution_label}`
+                        - **Guidance engine:** `{guidance_title}`
+                        - **Printer profile:** `{printer}`
+                        - **Filament strategy:** `{filament}`
+                        - **Build volume (X/Y/Z):** `{format_xyz_dims(build_x, build_y, build_z)}`
+                        - **Nozzle / bed:** `{optimized_plan['nozzle_temp']} degC / {optimized_plan['bed_temp']} degC`
+                        - **Layer height / infill:** `{optimized_plan['layer_height']} mm / {optimized_plan['infill_percent']}%`
+                        - **Wall loops / speed:** `{optimized_plan['wall_loops']} / {optimized_plan['print_speed']} mm/s`
+                        - **Top / bottom layers:** `{optimized_plan.get('top_layers', 4)} / {optimized_plan.get('bottom_layers', 4)}`
+                        - **Retraction / acceleration:** `{optimized_plan.get('retraction_length', 1.2)} mm / {optimized_plan.get('acceleration', 3000)} mm/s^2`
+                        - **Seam position:** `{optimized_plan.get('seam_position', 'Rear')}`
+                        - **Supports:** `{'Enabled' if optimized_plan['support_enabled'] else 'Disabled'}`
+                        - **Adhesion / nozzle:** `{optimized_plan['adhesion']} / {optimized_plan['nozzle_diameter']} mm`
+                        """
+                    )
+                    st.markdown(
+                        "<div class='metric-chip-row'>"
+                        f"<span class='metric-chip'><strong>Output:</strong> {output_type_title}</span>"
+                        f"<span class='metric-chip'><strong>Engine:</strong> {connection_title}</span>"
+                        f"<span class='metric-chip'><strong>Guidance:</strong> {guidance_title}</span>"
+                        f"<span class='metric-chip'><strong>Confidence:</strong> {overall_confidence * 100:.0f}%</span>"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+            if review_area == "Overview":
+                with st.container(border=True):
+                    st.markdown("#### Warnings")
+                    if objections:
+                        for reason in objections:
+                            st.markdown(f"- {reason}")
+                    else:
+                        st.success("No blocking warnings are active for the current live plan.")
+                    if mesh_analysis and mesh_analysis.get("adaptive_notes"):
+                        st.caption("Model-specific guidance:")
+                        for adaptive_note in mesh_analysis["adaptive_notes"]:
+                            st.markdown(f"- {adaptive_note}")
+            if review_area == "Tuning":
+                with st.container(border=True):
+                    st.markdown('<div class="review-section"><div class="review-kicker">Editable Planning</div><div class="review-copy">These are the places where the live plan moved away from CipherSlice\'s first recommendation, along with what that tradeoff usually means.</div>', unsafe_allow_html=True)
+                    st.markdown("#### Plan Changes")
+                    if plan_change_summary:
+                        st.markdown(
+                            "<div class='insight-grid'>"
+                            + "".join(
+                                f"<div class='insight-card'><div class='insight-card-title'>{title}</div><div class='insight-card-value'>{value}</div><div class='insight-card-copy'>{copy}</div></div>"
+                                for title, value, copy in plan_change_summary
+                            )
+                            + "</div>",
+                            unsafe_allow_html=True,
+                        )
+                    if plan_tradeoff_estimate:
+                        st.markdown(
+                            "<div class='metric-chip-row'>"
+                            + "".join(
+                                f"<span class='metric-chip'><strong>{label}:</strong> {value}</span>"
+                                for label, value in plan_tradeoff_estimate
+                            )
+                            + "</div>",
+                            unsafe_allow_html=True,
+                        )
+                    if plan_change_cards:
+                        st.caption("These settings differ from CipherSlice's first recommendation for this job.")
+                        st.markdown(
+                            "<div class='change-grid'>"
+                            + "".join(
+                                f"<div class='change-card{' change-card-risk' if card['risk'] in {'watch closely', 'tuning-sensitive'} else ''}'>"
+                                f"<div class='change-name'>{card['label']}</div>"
+                                f"<div class='change-meta'>Recommended: <strong>{card['recommended']}</strong><br>Current: <strong>{card['current']}</strong><br>{card['reason']}</div>"
+                                f"<div class='change-risk'>{card['risk']}</div>"
+                                f"</div>"
+                                for card in plan_change_cards
+                            )
+                            + "</div>",
+                            unsafe_allow_html=True,
+                        )
+                    elif plan_diff_lines:
+                        for diff_line in plan_diff_lines:
+                            st.markdown(f"- {diff_line}")
+                    else:
+                        st.success("The current live plan still matches the recommended defaults.")
+                    tune_action_col1, tune_action_col2 = st.columns(2, gap="medium")
+                    with tune_action_col1:
+                        if st.button("Restore Risky Settings", use_container_width=True, key=f"restore_risky_{artifact_hash}"):
+                            restore_risky_recommended_settings(artifact_hash, recommended_plan)
+                            st.rerun()
+                    with tune_action_col2:
+                        if st.button("Save Current Profile", use_container_width=True, key=f"save_profile_{artifact_hash}"):
+                            saved_profiles = list(st.session_state.get(saved_profile_key, []))
+                            saved_profiles.append(
+                                {
+                                    "label": f"Profile {len(saved_profiles) + 1}",
+                                    "controls": extract_plan_controls(optimized_plan),
+                                }
+                            )
+                            st.session_state[saved_profile_key] = saved_profiles[-8:]
+                            st.rerun()
+                    saved_profiles = list(st.session_state.get(saved_profile_key, []))
+                    if saved_profiles:
+                        load_profile_col1, load_profile_col2 = st.columns([0.7, 0.3], gap="small")
+                        with load_profile_col1:
+                            selected_profile_label = st.selectbox(
+                                "Saved profile",
+                                [profile["label"] for profile in saved_profiles],
+                                key=f"saved_profile_select_{artifact_hash}",
+                            )
+                        with load_profile_col2:
+                            st.write("")
+                            st.write("")
+                            if st.button("Load Saved Profile", use_container_width=True, key=f"load_profile_{artifact_hash}"):
+                                selected_profile = next(profile for profile in saved_profiles if profile["label"] == selected_profile_label)
+                                apply_snapshot_to_state(
+                                    artifact_hash,
+                                    {
+                                        "label": selected_profile["label"],
+                                        "controls": selected_profile["controls"],
+                                    },
+                                )
+                                st.rerun()
+                        st.markdown("</div>", unsafe_allow_html=True)
+            if mode == "Reliable Print Mode" and review_area == "Compare":
+                snapshot_bank = list(st.session_state.get(f"plan_snapshots_{artifact_hash}", []))
+                current_snapshot = {
+                    "label": "Current live plan",
+                    "filename": filename,
+                    "printer": printer,
+                    "filament": filament,
+                    "controls": extract_plan_controls(optimized_plan),
+                    "kind": "live",
+                }
+                snapshot_options = snapshot_bank + [current_snapshot]
+                snapshot_labels = [str(snapshot["label"]) for snapshot in snapshot_options]
+                with st.container(border=True):
+                    st.markdown('<div class="review-section"><div class="review-kicker">Snapshot Lab</div><div class="review-copy">Save checkpoints, compare two tuning paths, and restore a previous idea without losing the rest of the job context.</div>', unsafe_allow_html=True)
+                    st.markdown("#### Plan Snapshots + Compare")
+                    snap_action_col1, snap_action_col2 = st.columns(2, gap="medium")
+                    with snap_action_col1:
+                        left_snapshot_label = st.selectbox(
+                            "Left snapshot",
+                            snapshot_labels,
+                            index=max(0, len(snapshot_labels) - 2),
+                            key=f"snapshot_left_{artifact_hash}",
+                        )
+                    with snap_action_col2:
+                        right_snapshot_label = st.selectbox(
+                            "Right snapshot",
+                            snapshot_labels,
+                            index=len(snapshot_labels) - 1,
+                            key=f"snapshot_right_{artifact_hash}",
+                        )
+                    left_snapshot = next(snapshot for snapshot in snapshot_options if snapshot["label"] == left_snapshot_label)
+                    right_snapshot = next(snapshot for snapshot in snapshot_options if snapshot["label"] == right_snapshot_label)
+                    st.markdown(
+                        "<div class='compare-grid'>"
+                        f"<div class='compare-card'><h5>{left_snapshot['label']}</h5><p>Printer: <strong>{left_snapshot['printer']}</strong></p><p>Filament: <strong>{left_snapshot['filament']}</strong></p><p>Preset: <strong>{left_snapshot['controls'].get('profile_preset', 'Recommended')}</strong></p><p>Layer / speed: <strong>{left_snapshot['controls'].get('layer_height')} mm / {left_snapshot['controls'].get('print_speed')} mm/s</strong></p></div>"
+                        f"<div class='compare-card'><h5>{right_snapshot['label']}</h5><p>Printer: <strong>{right_snapshot['printer']}</strong></p><p>Filament: <strong>{right_snapshot['filament']}</strong></p><p>Preset: <strong>{right_snapshot['controls'].get('profile_preset', 'Recommended')}</strong></p><p>Layer / speed: <strong>{right_snapshot['controls'].get('layer_height')} mm / {right_snapshot['controls'].get('print_speed')} mm/s</strong></p></div>"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+                    snapshot_diff_lines = build_snapshot_diff_lines(left_snapshot, right_snapshot)
+                    if snapshot_diff_lines:
+                        st.markdown("**Exactly what changed**")
+                        for diff_line in snapshot_diff_lines:
+                            st.markdown(f"- {diff_line}")
+                    else:
+                        st.success("These two snapshots currently match on the tracked plan controls.")
+                    restore_compare_col1, restore_compare_col2 = st.columns(2, gap="medium")
+                    with restore_compare_col1:
+                        if left_snapshot["label"] != "Current live plan" and st.button("Restore Left Snapshot", use_container_width=True, key=f"restore_left_snapshot_{artifact_hash}"):
+                            apply_snapshot_to_state(artifact_hash, left_snapshot)
+                            st.rerun()
+                    with restore_compare_col2:
+                        if right_snapshot["label"] != "Current live plan" and st.button("Restore Right Snapshot", use_container_width=True, key=f"restore_right_snapshot_{artifact_hash}"):
+                            apply_snapshot_to_state(artifact_hash, right_snapshot)
+                            st.rerun()
+                    compare_export_text = (
+                        "CipherSlice Snapshot Compare\n\n"
+                        f"Left: {left_snapshot['label']}\n"
+                        f"Right: {right_snapshot['label']}\n\n"
+                        + "\n".join(snapshot_diff_lines or ["No tracked differences."])
+                    )
+                    compare_button_col1, compare_button_col2 = st.columns(2, gap="medium")
+                    with compare_button_col1:
+                        st.download_button(
+                            "Download Current Snapshot Summary",
+                            data=build_snapshot_export_text(current_snapshot),
+                            file_name=f"{file_stem}_current_plan_snapshot.txt",
+                            mime="text/plain",
+                            use_container_width=True,
+                        )
+                    with compare_button_col2:
+                        st.download_button(
+                            "Download Snapshot Comparison",
+                            data=compare_export_text,
+                            file_name=f"{file_stem}_snapshot_compare.txt",
+                            mime="text/plain",
+                            use_container_width=True,
+                        )
+                    st.markdown("</div>", unsafe_allow_html=True)
+                with st.container(border=True):
+                    st.markdown('<div class="review-section"><div class="review-kicker">What-If Lab</div><div class="review-copy">This lets the user test another material or printer without re-uploading the same part.</div>', unsafe_allow_html=True)
+                    st.markdown("#### Compare Another Printer or Material")
+                    compare_col1, compare_col2 = st.columns(2, gap="medium")
+                    with compare_col1:
+                        compare_printer = st.selectbox(
+                            "What-if printer",
+                            list(PRINTER_PROFILES.keys()),
+                            index=list(PRINTER_PROFILES.keys()).index(printer),
+                            key=f"what_if_printer_{artifact_hash}",
+                        )
+                    with compare_col2:
+                        compare_filament = st.selectbox(
+                            "What-if filament",
+                            FILAMENT_TYPES,
+                            index=FILAMENT_TYPES.index(filament),
+                            key=f"what_if_filament_{artifact_hash}",
+                        )
+                    compare_printer_profile = PRINTER_PROFILES[compare_printer]
+                    alt_mesh_analysis, alt_plan, alt_score, alt_fit_state = build_what_if_plan_summary(
+                        uploaded_file,
+                        compare_printer,
+                        compare_printer_profile,
+                        compare_filament,
+                        quality_profile,
+                        print_goal,
+                        support_strategy,
+                        adhesion_strategy,
+                        auto_scale_mesh,
+                    )
+                    current_risk = str((mesh_analysis or {}).get("risk_level", "Unknown"))
+                    alt_risk = str((alt_mesh_analysis or {}).get("risk_level", "Unknown"))
+                    best_safe_option = "Stay with the current setup"
+                    if alt_score > overall_confidence and not (alt_mesh_analysis or {}).get("issues"):
+                        best_safe_option = f"Switch to {compare_printer} with {compare_filament}"
+                    st.markdown(
+                        "<div class='compare-grid'>"
+                        f"<div class='compare-card'><h5>Current setup</h5><p>Printer: <strong>{printer}</strong></p><p>Filament: <strong>{filament}</strong></p><p>Risk: <strong>{current_risk}</strong></p><p>Layer / speed: <strong>{optimized_plan['layer_height']} mm / {optimized_plan['print_speed']} mm/s</strong></p><p>Confidence: <strong>{overall_confidence * 100:.0f}%</strong></p></div>"
+                        f"<div class='compare-card'><h5>What-if setup</h5><p>Printer: <strong>{compare_printer}</strong></p><p>Filament: <strong>{compare_filament}</strong></p><p>Fit: <strong>{alt_fit_state}</strong></p><p>Risk: <strong>{alt_risk}</strong></p><p>Layer / speed: <strong>{alt_plan['layer_height']} mm / {alt_plan['print_speed']} mm/s</strong></p><p>Estimated software confidence: <strong>{alt_score * 100:.0f}%</strong></p></div>"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.info(f"Best safe option right now: {best_safe_option}.")
+                    st.markdown("</div>", unsafe_allow_html=True)
+            if mode == "Reliable Print Mode" and review_area == "Release":
                 with st.container(border=True):
                     st.markdown('<div class="review-section"><div class="review-kicker">Slicer Handoff</div><div class="review-copy">This explains what becomes more real once a slicer backend is connected and why that matters for trustworthy output.</div>', unsafe_allow_html=True)
                     st.markdown("#### What Changes When Slicing Connects")
@@ -4287,36 +6230,79 @@ if active_job:
                         + "</div>",
                         unsafe_allow_html=True,
                     )
+                    st.markdown("**Slicer readiness report**")
+                    for label, value in slicer_capability_report:
+                        st.markdown(f"- **{label}:** `{value}`")
+                    st.markdown("**What the slicer still decides**")
+                    for note in slicer_decision_notes:
+                        st.markdown(f"- {note}")
+                    st.markdown("**Pre-slicer launch check**")
+                    pre_slicer_ready = bool(slicer_path) and not objections
+                    if pre_slicer_ready:
+                        st.success("The software-side plan is ready to hand into a deterministic slicer engine for real toolpath generation.")
+                    else:
+                        st.warning("CipherSlice is still holding full release. Clear the blockers above and connect a supported slicer backend before calling this printer-ready.")
                     st.markdown("</div>", unsafe_allow_html=True)
-            st.markdown(
+            if review_area == "Release":
+                st.markdown(
                 f'<div class="success-banner">Delivery package ready for {filename}. '
                 f'Protected for approved printer handoff.</div>',
                 unsafe_allow_html=True,
             )
-            st.markdown("#### Final Print Manifest")
-            st.markdown(
+            if review_area == "Release":
+                st.markdown(
+                "<div class='summary-strip'>"
+                f"<div class='summary-pill'><strong>Part + printer</strong>{filename}<br>{printer}</div>"
+                f"<div class='summary-pill'><strong>Layer / speed</strong>{optimized_plan['layer_height']} mm<br>{optimized_plan['print_speed']} mm/s</div>"
+                f"<div class='summary-pill'><strong>Material + output</strong>{filament}<br>{output_type_title}</div>"
+                f"<div class='summary-pill'><strong>Approval state</strong>{'Ready for approval' if release_allowed else 'Held for review'}<br>{overall_confidence * 100:.0f}% confidence</div>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            if review_area == "Release":
+                st.markdown("#### Final Print Manifest")
+            if review_area == "Release":
+                st.markdown(
                 f"""
                 <div class="manifest-card">
-                    <div class="manifest-line"><span class="manifest-key"><strong>Part:</strong></span> {filename}</div>
-                    <div class="manifest-line"><span class="manifest-key"><strong>Printer:</strong></span> {printer}</div>
-                    <div class="manifest-line"><span class="manifest-key"><strong>Build volume (X/Y/Z):</strong></span> {format_xyz_dims(build_x, build_y, build_z)}</div>
-                    <div class="manifest-line"><span class="manifest-key"><strong>Filament:</strong></span> {filament}</div>
-                    <div class="manifest-line"><span class="manifest-key"><strong>Nozzle / bed:</strong></span> {optimized_plan['nozzle_temp']} degC / {optimized_plan['bed_temp']} degC</div>
-                    <div class="manifest-line"><span class="manifest-key"><strong>Layer / infill / walls:</strong></span> {optimized_plan['layer_height']} mm / {optimized_plan['infill_percent']}% / {optimized_plan['wall_loops']}</div>
-                    <div class="manifest-line"><span class="manifest-key"><strong>Top / bottom layers:</strong></span> {optimized_plan.get('top_layers', 4)} / {optimized_plan.get('bottom_layers', 4)}</div>
-                    <div class="manifest-line"><span class="manifest-key"><strong>Retraction / acceleration:</strong></span> {optimized_plan.get('retraction_length', 1.2)} mm / {optimized_plan.get('acceleration', 3000)} mm/s^2</div>
-                    <div class="manifest-line"><span class="manifest-key"><strong>Seam position:</strong></span> {optimized_plan.get('seam_position', 'Rear')}</div>
-                    <div class="manifest-line"><span class="manifest-key"><strong>Support / adhesion:</strong></span> {'Enabled' if optimized_plan['support_enabled'] else 'Disabled'} / {optimized_plan['adhesion']}</div>
-                    <div class="manifest-line"><span class="manifest-key"><strong>Delivery mode:</strong></span> {delivery_mode}</div>
-                    <div class="manifest-line"><span class="manifest-key"><strong>Confidence:</strong></span> {overall_confidence * 100:.1f}%</div>
-                    <div class="manifest-line"><span class="manifest-key"><strong>Release status:</strong></span> {'APPROVED' if release_allowed else 'HELD'}</div>
+                    <div class="manifest-grid">
+                        <div class="manifest-section">
+                            <div class="manifest-section-title">Job Identity</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Part:</strong></span> {filename}</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Printer:</strong></span> {printer}</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Build volume (X/Y/Z):</strong></span> {format_xyz_dims(build_x, build_y, build_z)}</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Filament:</strong></span> {filament}</div>
+                        </div>
+                        <div class="manifest-section">
+                            <div class="manifest-section-title">Core Tuning</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Nozzle / bed:</strong></span> {optimized_plan['nozzle_temp']} degC / {optimized_plan['bed_temp']} degC</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Layer / infill / walls:</strong></span> {optimized_plan['layer_height']} mm / {optimized_plan['infill_percent']}% / {optimized_plan['wall_loops']}</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Top / bottom layers:</strong></span> {optimized_plan.get('top_layers', 4)} / {optimized_plan.get('bottom_layers', 4)}</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Infill pattern:</strong></span> {optimized_plan.get('infill_pattern', 'Gyroid')}</div>
+                        </div>
+                        <div class="manifest-section">
+                            <div class="manifest-section-title">Motion + First Layer</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Outer / inner / travel:</strong></span> {optimized_plan.get('outer_wall_speed', optimized_plan['print_speed'])} / {optimized_plan.get('inner_wall_speed', optimized_plan['print_speed'])} / {optimized_plan.get('travel_speed', optimized_plan['print_speed'])} mm/s</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>First layer:</strong></span> {optimized_plan.get('first_layer_height', optimized_plan['layer_height'])} mm / {optimized_plan.get('first_layer_speed', 20)} mm/s / {optimized_plan.get('first_layer_flow', 100)}%</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Retraction / acceleration:</strong></span> {optimized_plan.get('retraction_length', 1.2)} mm / {optimized_plan.get('acceleration', 3000)} mm/s^2</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Jerk / seam:</strong></span> {optimized_plan.get('jerk_control', 8)} / {optimized_plan.get('seam_position', 'Rear')}</div>
+                        </div>
+                        <div class="manifest-section">
+                            <div class="manifest-section-title">Support + Delivery</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Support:</strong></span> {'Enabled' if optimized_plan['support_enabled'] else 'Disabled'} / {optimized_plan.get('support_pattern', 'Lines')} / {'Interface on' if optimized_plan.get('support_interface') else 'Interface off'}</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Adhesion:</strong></span> {optimized_plan['adhesion']} / brim {optimized_plan.get('brim_width', 0)} mm / skirt {optimized_plan.get('skirt_loops', 0)} loops</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Delivery mode:</strong></span> {delivery_mode}</div>
+                            <div class="manifest-line"><span class="manifest-key"><strong>Confidence / release:</strong></span> {overall_confidence * 100:.1f}% / {'APPROVED' if release_allowed else 'HELD'}</div>
+                        </div>
+                    </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            st.markdown("### Best Next Move")
-            st.info(next_action)
-            if not slicer_path:
+            if review_area == "Overview":
+                st.markdown("### Best Next Move")
+                st.info(next_action)
+            if review_area == "Overview" and not slicer_path:
                 st.warning(
                     "Production release is still held by design because no slicer backend is connected. "
                     "That is why the print-file score stays capped and different files can still share similar high-level settings."
@@ -4329,17 +6315,21 @@ if active_job:
                 final_user_approval,
                 delivery_mode,
             )
-            st.markdown("### Readiness Check")
-            for label, value in status_rows:
-                st.markdown(f"- **{label}:** `{value}`")
-            if is_production_print_file:
-                st.caption("Checking this box confirms you want CipherSlice to unlock the real slicer-generated print file and release tools for this job.")
-            else:
-                st.caption("Checking this box does not send anything to a printer. It only unlocks the preview/setup downloads for this planning-stage job.")
-            final_user_approval = st.checkbox(
-                approval_label,
-                key=approval_key,
-            )
+            if review_area == "Overview":
+                st.markdown("### Readiness Check")
+                for label, value in status_rows:
+                    st.markdown(f"- **{label}:** `{value}`")
+            if review_area == "Release":
+                with st.container(border=True):
+                    st.markdown("#### Final Human Checkpoint")
+                    if is_production_print_file:
+                        st.caption("This confirms you want CipherSlice to unlock the real slicer-generated print file and release tools for this job.")
+                    else:
+                        st.caption("This does not send anything to a printer. It only unlocks the preview and setup downloads for this planning-stage job.")
+                    final_user_approval = st.checkbox(
+                        approval_label,
+                        key=approval_key,
+                    )
             status_rows = build_status_board(
                 mode,
                 slicer_path,
@@ -4348,51 +6338,85 @@ if active_job:
                 final_user_approval,
                 delivery_mode,
             )
-            st.markdown("### Final Approval Status")
-            for label, value in status_rows:
-                st.markdown(f"- **{label}:** `{value}`")
-            with st.container(border=True):
-                st.markdown("#### Release")
-                st.caption(release_caption)
-                st.download_button(
-                    print_file_download_label,
-                    data=primary_artifact,
-                    file_name=print_file_download_name,
-                    mime="text/plain",
-                    use_container_width=True,
-                    disabled=not (release_allowed and final_user_approval),
-                )
-                if slicer_setup_bundle:
+            if review_area == "Release":
+                st.markdown("### Final Approval Status")
+                for label, value in status_rows:
+                    st.markdown(f"- **{label}:** `{value}`")
+            if review_area == "Release":
+                with st.container(border=True):
+                    st.markdown("#### Release")
+                    st.caption(release_caption)
                     st.download_button(
-                        "Download Slicer Setup Pack",
-                        data=slicer_setup_bundle,
-                        file_name=f"{file_stem}_cipher_setup_pack.zip",
-                        mime="application/zip",
-                        use_container_width=True,
-                    )
-                    st.download_button(
-                        "Download Handoff Contract",
-                        data=json.dumps(handoff_contract, indent=2),
-                        file_name=f"{file_stem}_handoff_contract.json",
-                        mime="application/json",
-                        use_container_width=True,
-                    )
-                    st.download_button(
-                        "Download Slicer Connection Notes",
-                        data=print_engine_setup_notes,
-                        file_name=f"{file_stem}_print_engine_setup.txt",
+                        print_file_download_label,
+                        data=primary_artifact,
+                        file_name=print_file_download_name,
                         mime="text/plain",
                         use_container_width=True,
+                        disabled=not (release_allowed and final_user_approval),
                     )
-                if operator_handoff_sheet:
-                    st.download_button(
-                        "Download Operator Handoff Sheet",
-                        data=operator_handoff_sheet,
-                        file_name=f"{file_stem}_operator_handoff.txt",
-                        mime="text/plain",
-                        use_container_width=True,
+                    if slicer_setup_bundle:
+                        st.download_button(
+                            "Download Slicer Setup Pack",
+                            data=slicer_setup_bundle,
+                            file_name=f"{file_stem}_cipher_setup_pack.zip",
+                            mime="application/zip",
+                            use_container_width=True,
+                        )
+                        st.download_button(
+                            "Download Handoff Contract",
+                            data=json.dumps(handoff_contract, indent=2),
+                            file_name=f"{file_stem}_handoff_contract.json",
+                            mime="application/json",
+                            use_container_width=True,
+                        )
+                        st.download_button(
+                            "Download Slicer Connection Notes",
+                            data=print_engine_setup_notes,
+                            file_name=f"{file_stem}_print_engine_setup.txt",
+                            mime="text/plain",
+                            use_container_width=True,
+                        )
+                    if operator_handoff_sheet:
+                        st.download_button(
+                            "Download Operator Handoff Sheet",
+                            data=operator_handoff_sheet,
+                            file_name=f"{file_stem}_operator_handoff.txt",
+                            mime="text/plain",
+                            use_container_width=True,
+                        )
+                    if handoff_audit_trail:
+                        st.download_button(
+                            "Download Handoff Audit Trail",
+                            data=handoff_audit_trail,
+                            file_name=f"{file_stem}_handoff_audit.txt",
+                            mime="text/plain",
+                            use_container_width=True,
+                        )
+            if review_area == "Release":
+                with st.container(border=True):
+                    st.markdown("#### What Happens Next")
+                    st.markdown(
+                        "<div class='transition-grid'>"
+                        + "".join(
+                            f"<div class='transition-card'><div class='transition-title'>{title}</div><div class='transition-copy'>{copy}</div></div>"
+                            for title, copy in (
+                                [
+                                    ("Preview workflow", "Download the preview or setup pack, then move into a real slicer before any physical print should be trusted."),
+                                    ("Slicer workflow", "Reconnect the same job after a slicer backend is installed so CipherSlice can upgrade from planning preview to real slicing."),
+                                    ("Hardware workflow", "Only after slicing and human approval should the job move toward SD transfer, connector handoff, or a live printer."),
+                                ]
+                                if not is_production_print_file
+                                else [
+                                    ("Approval workflow", "The user confirms the plan, unlocks the slicer-made print file, and keeps final human control."),
+                                    ("Delivery workflow", "CipherSlice packages the file for SD export, manual review, or future secure local connector handoff."),
+                                    ("Printer workflow", "A real printer is only needed at the final execution step after the software review is already complete."),
+                                ]
+                            )
+                        )
+                        + "</div>",
+                        unsafe_allow_html=True,
                     )
-            if delivery_mode == "SD card export":
+            if review_area == "Release" and delivery_mode == "SD card export":
                 st.warning(
                     "SD card mode is compatible with many printers, but it is not a secure streaming channel. Once the file is exported, "
                     "CipherSlice cannot guarantee one-time use, remote revocation, or end-to-end hardware authentication."
@@ -4401,13 +6425,13 @@ if active_job:
                 st.markdown("- Confirm the printer model and plastic profile match the exported plan.")
                 st.markdown("- Label the print file clearly before copying it to removable media.")
                 st.markdown("- Review temperatures, supports, and scale one last time on the printer screen before printing.")
-            stream_triggered = st.button(
+            stream_triggered = review_area == "Release" and st.button(
                 "Send to Approved Printer Link",
                 use_container_width=True,
                 key=f"hardware_stream_{artifact_hash}",
                 disabled=not (release_allowed and final_user_approval and delivery_mode == "Secure local connector"),
             )
-            if delivery_mode != "Secure local connector":
+            if review_area == "Release" and delivery_mode != "Secure local connector":
                 st.caption("Direct secure printer handoff is available only when `Delivery Mode` is set to `Secure local connector`.")
             if stream_triggered:
                 with st.status("Preparing secure printer link...", expanded=True) as hardware_status:

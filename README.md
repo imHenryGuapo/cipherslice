@@ -35,7 +35,7 @@ For a school or club demo:
 
 ## Build roadmap
 
-The next 50 ordered milestones after Phase 8 live in [ROADMAP.md](ROADMAP.md). That file now tracks the recommended build order from the current planning-and-review product state up to the point where real slicer generation and physical printer connection become the true blocker.
+The next 50 ordered milestones after Phase 13 live in [ROADMAP.md](ROADMAP.md). That file now tracks the recommended build order from the current interactive-preview planning state up to the point where real slicer generation and physical printer connection become the true blocker.
 
 ## Current foundation
 
@@ -47,7 +47,8 @@ CipherSlice now has the following foundation in place:
 - custom printer X/Y/Z configuration support
 - geometry intelligence for scale, fit, mesh health, and risk
 - deeper printer and material realism for nozzle size, chamber, firmware, and bed shape
-- grouped review sections for printer/material reality check, at-a-glance review, bed/size preview, and geometry intelligence
+- grouped review sections for printer/material reality check, at-a-glance review, print fit review, and shape health review
+- an interactive 3D preview with orientation-aware review support
 - setup packs and handoff sheets for slicer preparation before printer connection
 
 ## Delivery modes
