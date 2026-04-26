@@ -1,72 +1,91 @@
-# CipherSlice Pre-Printer Roadmap
+# CipherSlice Post-Phase-8 Roadmap
 
-This roadmap tracks the next 50 things to build before the project reaches the point where a real slicer backend and printer access become the main blocker.
+CipherSlice now has its core planning foundation in place:
 
-## Phase 1: Make the Prototype Honest and Clear
+- Phase 1: trust, clarity, and safer preview language
+- Phase 2: beginner vs advanced workflow shaping
+- Phase 3: broader printer and material coverage
+- Phase 4: stronger geometry review, fit logic, and scale intelligence
+- Phase 5: editable planning and recommendation comparison
+- Phase 6: cleaner output truthfulness and slicer handoff framing
+- Phase 7: deeper machine and material realism
+- Phase 8: stronger geometry intelligence, fit nuance, and risk grouping
 
-1. Separate preview output from real printer-ready G-code everywhere in the UI.
-2. Show a plain-English capability status box after every generated plan.
-3. Rename technical release words into beginner-friendly manufacturing language.
-4. Make confidence scores explain what is capped and why.
-5. Add a visible "not printer-ready yet" label when no slicer backend is connected.
-6. Make SD card, manual download, and secure connector paths impossible to confuse.
-7. Improve final approval so users understand what they are approving.
-8. Add clearer warnings when a download is only a planning preview.
-9. Keep internal AI/worker details out of the main customer flow.
-10. Move deeper technical explanations into README and developer-only sections.
+These are the next 50 optimal build steps from the current state up to the point where real printer connection and real hardware validation become the main blocker.
 
-## Phase 2: Improve Beginner and Advanced Workflows
+## Phase 9: Review UX and Information Design
 
-11. Make Beginner mode feel like click, upload, review, approve.
-12. Make Advanced mode expose richer controls without overwhelming beginners.
-13. Add X, Y, and Z labels beside width, depth, and height anywhere dimensions appear.
-14. Expand advanced controls for walls, layer height, infill, speed, support, adhesion, nozzle, bed, flow, seam, acceleration, and G-code flavor.
-15. Add printer-family presets for more Bambu, Prusa, Creality, Anycubic, Voron, Raise3D, and custom machines.
-16. Add clearer material presets for PLA, PETG, ABS, ASA, TPU, Nylon, PC, and composites.
-17. Add beginner descriptions for every material choice.
-18. Add advanced descriptions for how each setting affects strength, time, and risk.
-19. Add a one-click "safe defaults" restore button.
-20. Add a "compare recommended vs edited" view.
+1. Build a compact review header that shows the most important job facts in one screen.
+2. Add a stronger visual divider between planning summary, geometry review, and delivery review.
+3. Turn the final manifest into a cleaner handoff-sheet layout with grouped subsections.
+4. Add a sticky or repeated mini-summary so users do not lose context while scrolling.
+5. Create a clearer “recommended vs your current settings” review panel.
+6. Highlight only the risky overrides instead of visually treating every change the same.
+7. Add a plain-language “why this changed” line beside major recommended settings.
+8. Make the approval area read like a final human checkpoint instead of a generic form step.
+9. Improve the confidence area so the score, meaning, and blockers are easier to scan.
+10. Add a final “what happens next” section that changes based on preview, setup pack, or future real slicing.
 
-## Phase 3: Better Geometry and Preview Intelligence
+## Phase 10: Advanced Tuning Depth
 
-21. Improve STL/OBJ/3MF mesh reading and size detection.
-22. Detect likely inch-to-millimeter or meter-to-millimeter scale mistakes.
-23. Show object dimensions with X/Y/Z labels.
-24. Show object fit against the selected printer build volume.
-25. Add a stronger visual bed preview.
-26. Add a true 3D model preview path.
-27. Add rotate, zoom, and inspect controls for the preview.
-28. Show overhang and support-risk estimates in the preview.
-29. Show wall-thickness and fragile-feature warnings when detectable.
-30. Add a "what changed because of this model" explanation.
+11. Add more slicer-like controls for outer wall speed, inner wall speed, and travel speed.
+12. Add independent top layer and bottom layer controls with safer beginner guardrails.
+13. Add infill pattern choice beyond the current simplified options.
+14. Add support interface and support pattern controls in Advanced mode.
+15. Add brim width and skirt loop controls with beginner-safe defaults.
+16. Add seam handling choices with clearer visual language for each seam strategy.
+17. Add more realistic flow-rate and first-layer tuning controls.
+18. Add a cleaner motion section for acceleration, jerk, and print stability.
+19. Add profile presets for strength-first, quality-first, speed-first, and prototype-first.
+20. Add a one-click “compare my tuned profile against the recommended profile” action.
 
-## Phase 4: Slicer Handoff Preparation
+## Phase 11: Job Comparison and Iteration Tools
 
-31. Generate cleaner slicer configuration files.
-32. Generate slicer command previews for supported slicers.
-33. Package the uploaded model, config, handoff contract, and setup notes into one zip.
-34. Add OrcaSlicer-specific profile export support.
-35. Add PrusaSlicer-specific profile export support.
-36. Add CuraEngine research and compatibility notes.
-37. Validate which slicer CLI is available on the machine.
-38. Show exactly what environment variable is needed for the slicer path.
-39. Add a dry-run slicer check that does not require a printer.
-40. Parse slicer errors into beginner-friendly fixes.
+21. Let users save a plan snapshot before making heavy overrides.
+22. Add a side-by-side comparison view for two plans of the same model.
+23. Show exactly which settings changed between saved snapshots.
+24. Add a quick “undo my last override” action for advanced editing.
+25. Add a restore point after every major workflow milestone.
+26. Allow users to duplicate a plan and test two different tuning paths.
+27. Add a quick comparison mode for two materials on the same printer.
+28. Add a quick comparison mode for two printers using the same part.
+29. Add a simple “best safe option right now” recommendation after comparison.
+30. Add exportable plan summaries for club demos, teachers, or collaborators.
 
-## Phase 5: Output Review and Safety
+## Phase 12: Richer Geometry and Printability Checks
 
-41. Add a "before you print" checklist customized to the selected printer and material.
-42. Add a line-type summary when real G-code exists, such as walls, infill, supports, travel, and estimated time.
-43. Add estimated filament usage when the slicer provides it.
-44. Add estimated print time when the slicer provides it.
-45. Add stronger warnings for SD card workflows.
-46. Add encrypted download explanations that do not overpromise SD card security.
-47. Add an operator handoff sheet that a club member can follow at the printer.
-48. Add a final review screen that cleanly separates settings, warnings, downloads, and printer handoff.
-49. Add test files and repeatable test cases for different STL sizes and printer profiles.
-50. Stop at real hardware handoff until a slicer backend, connector, printer access, and operator permission are available.
+31. Add stronger thin-wall detection with clearer risk language.
+32. Add unsupported-island detection for geometry that may need support.
+33. Add a first-layer contact estimate to catch narrow or unstable starting footprints.
+34. Add bridge-heavy geometry detection with guidance for cooling and orientation.
+35. Add overhang grouping so the user sees whether issues are local or widespread.
+36. Add a “part likely needs reorientation” warning when geometry clearly fights the bed.
+37. Add a small-feature survivability hint based on nozzle size and layer height.
+38. Add a more realistic large-flat-part warp warning for hotter materials.
+39. Add a geometry-driven support-density recommendation.
+40. Add a geometry-driven adhesion recommendation that explains brim, skirt, or no extra adhesion.
 
-## The Hard Stop
+## Phase 13: Visual Preview and Orientation Support
 
-The project can keep improving planning, UI, previews, slicer setup, and export packaging without a printer. The true hard stop comes when CipherSlice needs to prove that a real printer receives and safely runs the job. At that point, we need at least one real slicer backend and one real printer workflow to test against.
+41. Add a safe embedded 3D preview for uploaded mesh files.
+42. Add simple rotate presets so users can test likely print orientations.
+43. Add side-by-side orientation candidates with plain-language tradeoffs.
+44. Add a visual bed occupancy overlay in the preview area.
+45. Add a height-risk overlay or warning for tall and narrow parts.
+46. Add a preview callout for where supports are likely to appear.
+47. Add a preview callout for likely seam zones when seam strategy changes.
+48. Add a “before vs after orientation recommendation” visual snapshot.
+49. Add a visual check that helps users spot accidental wrong scale faster.
+50. Add a pre-slicer readiness screen that proves the plan, geometry review, and orientation review are solid enough that the next serious leap is real slicer generation and physical printer connection.
+
+## Stop Point
+
+After Step 50, the work stops being mostly product-planning software work.
+
+The next blocker becomes real-world execution:
+
+- a trusted slicer backend installed and callable
+- real printer profiles validated against that slicer
+- a local connector, printer API, or removable-media handoff path
+- a reachable physical printer
+- real hardware print tests and calibration feedback

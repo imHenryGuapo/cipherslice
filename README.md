@@ -31,11 +31,24 @@ For a school or club demo:
 3. Use `Reliable Print Mode`
 4. Upload a real `.stl` or `.obj`
 5. Review recommendations, edit overrides if needed, and approve the plan
-6. Export the artifact and move it to the printer workflow
+6. Export the artifact and move it into the printer workflow
 
 ## Build roadmap
 
-The next 50 pre-printer milestones live in [ROADMAP.md](ROADMAP.md). That file tracks what we can keep coding before the project truly needs a real slicer backend, printer connector, and physical printer access.
+The next 50 ordered milestones after Phase 8 live in [ROADMAP.md](ROADMAP.md). That file now tracks the recommended build order from the current planning-and-review product state up to the point where real slicer generation and physical printer connection become the true blocker.
+
+## Current foundation
+
+CipherSlice now has the following foundation in place:
+
+- cleaner customer-facing wording that separates planning previews from real print files
+- beginner and advanced control paths
+- broader printer preset and filament coverage
+- custom printer X/Y/Z configuration support
+- geometry intelligence for scale, fit, mesh health, and risk
+- deeper printer and material realism for nozzle size, chamber, firmware, and bed shape
+- grouped review sections for printer/material reality check, at-a-glance review, bed/size preview, and geometry intelligence
+- setup packs and handoff sheets for slicer preparation before printer connection
 
 ## Delivery modes
 
@@ -158,7 +171,7 @@ The user-facing site should stay clean:
 - show editable plan sections
 - show warnings and blockers clearly
 - hide verbose model prompts and internal orchestration details
-- keep live worker failures behind a simple status message instead of spilling raw API/debug text into the main workflow
+- keep live worker failures behind a simple status message instead of spilling raw API or debug text into the main workflow
 
 The README and backend code can carry the deeper orchestration details without turning the front end into a developer console.
 
