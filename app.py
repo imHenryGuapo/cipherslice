@@ -1,4 +1,5 @@
 import hashlib
+import html
 import io
 import json
 import math
@@ -1201,7 +1202,7 @@ def build_engine_connection_summary(
     connector_url: str | None,
 ) -> tuple[str, str]:
     if slicer_path and connector_url:
-        return ("Engine + link ready", "CipherSlice can slice for real and hand the job toward a connected printer path.")
+        return ("Engine and link ready", "CipherSlice can slice for real and hand the job toward a connected printer path.")
     if slicer_path:
         return ("Engine ready", "CipherSlice can generate a real print file now. Hardware can be connected later.")
     return ("Planning only", "CipherSlice can plan and prepare the job, but a real slicer still needs to be connected.")
@@ -1722,6 +1723,22 @@ def return_to_guided_workspace(target: str | None = None) -> None:
     if target:
         st.session_state["review_workspace_target"] = target
     st.switch_page("app.py")
+
+
+def build_pending_uploaded_file(payload: dict[str, object] | None):
+    if not payload:
+        return None
+    file_name = str(payload.get("name", "advanced_upload.stl"))
+    file_bytes = payload.get("bytes", b"")
+    if not isinstance(file_bytes, (bytes, bytearray)):
+        return None
+    file_bytes = bytes(file_bytes)
+    return SimpleNamespace(
+        name=file_name,
+        size=len(file_bytes),
+        type=str(payload.get("type", "")),
+        getvalue=lambda: file_bytes,
+    )
 
 
 def clear_active_job() -> None:
@@ -3586,7 +3603,7 @@ def generate_gcode(
     contract_comments = format_handoff_contract_comments(handoff_contract) if handoff_contract else ""
     return textwrap.dedent(
         f"""
-        ; CipherSlice Autonomous Manufacturing Stream
+        ; CipherSlice Guided Print File
         ; Source File: {sanitized_name}
         ; Target Printer: {printer}
         ; Filament Profile: {filament}
@@ -3873,6 +3890,39 @@ st.markdown(
         background: rgba(255, 79, 79, 0.14);
         border: 1px solid rgba(255, 128, 128, 0.24);
         color: #ffd8d8;
+    }
+    .soft-note {
+        border-radius: 16px;
+        padding: 0.85rem 0.95rem;
+        margin-top: 0.85rem;
+        border: 1px solid rgba(104, 144, 177, 0.16);
+        background: rgba(9, 19, 31, 0.75);
+    }
+    .soft-note-title {
+        color: #edf5fb;
+        font-size: 0.95rem;
+        font-weight: 650;
+        margin-bottom: 0.18rem;
+    }
+    .soft-note-copy {
+        color: #a9bdcc;
+        line-height: 1.5;
+        font-size: 0.94rem;
+    }
+    .soft-note-neutral {
+        border-color: rgba(104, 144, 177, 0.16);
+    }
+    .soft-note-success {
+        border-color: rgba(104, 241, 193, 0.22);
+        background: rgba(8, 28, 25, 0.58);
+    }
+    .soft-note-warn {
+        border-color: rgba(208, 182, 96, 0.24);
+        background: rgba(33, 27, 13, 0.58);
+    }
+    .soft-note-danger {
+        border-color: rgba(255, 139, 144, 0.22);
+        background: rgba(40, 16, 20, 0.58);
     }
     .manifest-card {
         background: linear-gradient(180deg, rgba(8, 23, 37, 0.96), rgba(5, 14, 25, 0.96));
@@ -4412,7 +4462,7 @@ st.markdown(
     """
     <div class="hero-card">
         <div class="section-label">CipherSlice Control Plane</div>
-        <div class="hero-title">Build + Review Your Print</div>
+        <div class="hero-title">Build and Review Your Print</div>
         <div class="hero-subtitle">
             CipherSlice now separates dependable printing from blueprint intelligence. Consumers can
             either upload a real 3D mesh for immediate printer-targeted output, or submit a structured
@@ -4437,124 +4487,184 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.write("")
 if "persona_key" not in st.session_state:
     st.session_state["persona_key"] = "friend"
 if "active_job" not in st.session_state:
     st.session_state["active_job"] = None
 if "experience_mode" not in st.session_state:
     st.session_state["experience_mode"] = "Beginner"
+compact_advanced_builder = bool(st.session_state.get("advanced_direct_build")) and st.session_state.get("experience_mode") == "Advanced"
+
+
+def render_soft_notice(body: str, title: str | None = None, tone: str = "neutral") -> None:
+    safe_tone = tone if tone in {"neutral", "success", "warn", "danger"} else "neutral"
+    safe_title = html.escape(title) if title else ""
+    safe_body = html.escape(body).replace("\n", "<br/>")
+    title_html = f'<div class="soft-note-title">{safe_title}</div>' if safe_title else ""
+    st.markdown(
+        f'<div class="soft-note soft-note-{safe_tone}">{title_html}<div class="soft-note-copy">{safe_body}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+st.write("")
 
 persona = get_persona()
 
-st.markdown('<div class="panel-card">', unsafe_allow_html=True)
-if st.session_state.get("active_job"):
-    active_name = st.session_state["active_job"].get("filename", "current job")
-    active_mode = st.session_state["active_job"].get("mode", "print job")
-    st.info(
-        f"Active job loaded: `{active_name}` in `{active_mode}`. "
-        "Your review and approval controls are still available below."
-    )
-    st.button("Start a Different Job", use_container_width=True, on_click=clear_active_job)
-st.markdown("### Step 0: Choose Your AI Copilot")
-st.markdown(
-    """
-    <div class="persona-grid">
-        <div class="persona-card">
-            <div class="persona-title">Friend</div>
-            <div class="persona-copy">
-                Calm and supportive. Explains manufacturing choices clearly, flags risks gently, and helps users learn.
+if not compact_advanced_builder:
+    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    if st.session_state.get("active_job"):
+        active_name = st.session_state["active_job"].get("filename", "current job")
+        active_mode = st.session_state["active_job"].get("mode", "print job")
+        render_soft_notice(
+            f"Active job loaded: {active_name} in {active_mode}. Your review and approval controls are still available below.",
+            title="Current job",
+            tone="neutral",
+        )
+        st.button("Start a Different Job", use_container_width=True, on_click=clear_active_job)
+    st.markdown("### Step 0: Choose Your AI Copilot")
+    st.markdown(
+        """
+        <div class="persona-grid">
+            <div class="persona-card">
+                <div class="persona-title">Friend</div>
+                <div class="persona-copy">
+                    Calm and supportive. Explains manufacturing choices clearly, flags risks gently, and helps users learn.
+                </div>
+            </div>
+            <div class="persona-card">
+                <div class="persona-title">Best Friend</div>
+                <div class="persona-copy">
+                    Same safe recommendations, but with relaxed best-friend energy, more personality, and a little more edge.
+                </div>
             </div>
         </div>
-        <div class="persona-card">
-            <div class="persona-title">Best Friend</div>
-            <div class="persona-copy">
-                Same safe recommendations, but with relaxed best-friend energy, more personality, and a little more edge.
-            </div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-persona_col1, persona_col2 = st.columns(2, gap="large")
-with persona_col1:
-    st.button(
-        "Friend",
-        use_container_width=True,
-        type="primary" if st.session_state["persona_key"] == "friend" else "secondary",
-        on_click=set_persona,
-        args=("friend",),
+        """,
+        unsafe_allow_html=True,
     )
-with persona_col2:
-    st.button(
-        "Best Friend",
-        use_container_width=True,
-        type="primary" if st.session_state["persona_key"] == "best_friend" else "secondary",
-        on_click=set_persona,
-        args=("best_friend",),
+    persona_col1, persona_col2 = st.columns(2, gap="large")
+    with persona_col1:
+        st.button(
+            "Friend",
+            use_container_width=True,
+            type="primary" if st.session_state["persona_key"] == "friend" else "secondary",
+            on_click=set_persona,
+            args=("friend",),
+        )
+    with persona_col2:
+        st.button(
+            "Best Friend",
+            use_container_width=True,
+            type="primary" if st.session_state["persona_key"] == "best_friend" else "secondary",
+            on_click=set_persona,
+            args=("best_friend",),
+        )
+    persona = get_persona()
+    render_soft_notice(
+        f"{persona['title']}. {persona['intro']}",
+        title="Active copilot",
+        tone="neutral",
     )
-persona = get_persona()
-st.info(f"Active copilot: `{persona['title']}`. {persona['intro']}")
-st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    st.markdown("### Choose Your Control Level")
+    st.markdown(
+        "Beginner keeps the setup simple and continues inline below. Advanced opens a separate expert workspace while still using the same shared job underneath."
+    )
+    control_col1, control_col2 = st.columns(2, gap="medium")
+    with control_col1:
+        if st.button(
+            "Beginner",
+            use_container_width=True,
+            type="primary" if st.session_state.get("experience_mode", "Beginner") == "Beginner" else "secondary",
+            key="workflow_beginner_top",
+        ):
+            st.session_state["experience_mode"] = "Beginner"
+            st.session_state.pop("advanced_direct_build", None)
+    with control_col2:
+        if st.button(
+            "Advanced",
+            use_container_width=True,
+            type="primary" if st.session_state.get("experience_mode", "Beginner") == "Advanced" else "secondary",
+            key="workflow_advanced_top",
+        ):
+            open_advanced_workspace()
+    st.markdown("</div>", unsafe_allow_html=True)
+else:
+    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    st.markdown("### Advanced Builder")
+    render_soft_notice(
+        "You came here from Advanced Print Lab. This view opens straight into the expert-friendly build controls instead of the full home flow.",
+        title="Expert lane active",
+        tone="neutral",
+    )
+    compact_col1, compact_col2 = st.columns([1, 1], gap="medium")
+    with compact_col1:
+        if st.button("Return to Full Control Plane", use_container_width=True):
+            st.session_state.pop("advanced_direct_build", None)
+            st.rerun()
+    with compact_col2:
+        if st.button("Open Advanced Print Lab", use_container_width=True):
+            open_advanced_workspace()
+    st.markdown("</div>", unsafe_allow_html=True)
 
 slicer_label, slicer_path = detect_slicer_backend()
 connector_url, connector_state = detect_connector()
 global_state, global_message = summarize_global_readiness(slicer_path, connector_url)
 
-st.markdown('<div class="panel-card">', unsafe_allow_html=True)
-st.markdown("### What Is Ready Right Now")
-status_cols = st.columns(4, gap="medium")
-status_cols[0].metric("Overall", global_state)
-status_cols[1].metric("Print engine", "Connected" if slicer_path else "Missing")
-status_cols[2].metric("Printer link", "Connected" if connector_url else "Not connected")
-status_cols[3].metric("Website", "Live")
-banner_class = "state-ready" if global_state == "Good to go" else ("state-review" if global_state == "Almost ready" else "state-blocked")
-st.markdown(
-    f'<div class="state-banner {banner_class}">Current setup: {global_state}. {global_message}</div>',
-    unsafe_allow_html=True,
-)
-if global_state == "Good to go":
-    st.success(global_message)
-elif global_state == "Almost ready":
-    st.warning(global_message)
-else:
-    st.error(global_message)
-st.markdown("</div>", unsafe_allow_html=True)
+if not compact_advanced_builder:
+    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    st.markdown("### What Is Ready Right Now")
+    status_cols = st.columns(4, gap="medium")
+    status_cols[0].metric("Overall", global_state)
+    status_cols[1].metric("Print engine", "Connected" if slicer_path else "Missing")
+    status_cols[2].metric("Printer link", "Connected" if connector_url else "Not connected")
+    status_cols[3].metric("Website", "Live")
+    banner_class = "state-ready" if global_state == "Good to go" else ("state-review" if global_state == "Almost ready" else "state-blocked")
+    st.markdown(
+        f'<div class="state-banner {banner_class}">Current setup: {global_state}. {global_message}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
 
 if "delivery_mode_choice" not in st.session_state:
     st.session_state["delivery_mode_choice"] = "SD card export"
 
-st.markdown('<div class="panel-card">', unsafe_allow_html=True)
-st.markdown("### Choose Delivery Strategy")
-delivery_cols = st.columns(3, gap="medium")
-for column, mode_name in zip(delivery_cols, DELIVERY_MODES):
-    with column:
-        with st.container(border=True):
-            st.markdown(f"**{mode_name}**")
-            if DELIVERY_MODE_DETAILS[mode_name]["recommended"]:
-                st.caption(DELIVERY_MODE_DETAILS[mode_name]["recommended"])
-            st.write(DELIVERY_MODE_DETAILS[mode_name]["summary"])
-            st.markdown(
-                f"<span style='color:#d8c680;'><strong>Tradeoff:</strong> {DELIVERY_MODE_DETAILS[mode_name]['warning']}</span>",
-                unsafe_allow_html=True,
+if not compact_advanced_builder:
+    st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    st.markdown("### Choose Delivery Strategy")
+    delivery_cols = st.columns(3, gap="medium")
+    for column, mode_name in zip(delivery_cols, DELIVERY_MODES):
+        with column:
+            with st.container(border=True):
+                st.markdown(f"**{mode_name}**")
+                if DELIVERY_MODE_DETAILS[mode_name]["recommended"]:
+                    st.caption(DELIVERY_MODE_DETAILS[mode_name]["recommended"])
+                st.write(DELIVERY_MODE_DETAILS[mode_name]["summary"])
+                st.markdown(
+                    f"<span style='color:#d8c680;'><strong>Tradeoff:</strong> {DELIVERY_MODE_DETAILS[mode_name]['warning']}</span>",
+                    unsafe_allow_html=True,
+                )
+            st.button(
+                mode_name,
+                use_container_width=True,
+                type="primary" if st.session_state["delivery_mode_choice"] == mode_name else "secondary",
+                on_click=set_delivery_mode,
+                args=(mode_name,),
+                key=f"delivery_{mode_name}",
             )
-        st.button(
-            mode_name,
-            use_container_width=True,
-            type="primary" if st.session_state["delivery_mode_choice"] == mode_name else "secondary",
-            on_click=set_delivery_mode,
-            args=(mode_name,),
-            key=f"delivery_{mode_name}",
-        )
-st.info(
-    f"Active delivery strategy: `{st.session_state['delivery_mode_choice']}`. "
-    f"{DELIVERY_MODE_DETAILS[st.session_state['delivery_mode_choice']]['summary']}"
-)
-st.warning(
-    "Recommended: use `Reliable Print Mode` with `SD card export`. "
-    "It works well even on locked-down club computers and still shows the full optimization + approval experience."
-)
-st.markdown("</div>", unsafe_allow_html=True)
+    render_soft_notice(
+        f"{st.session_state['delivery_mode_choice']}. {DELIVERY_MODE_DETAILS[st.session_state['delivery_mode_choice']]['summary']}",
+        title="Active delivery strategy",
+        tone="neutral",
+    )
+    render_soft_notice(
+        "Use Reliable Print Mode with SD card export for school demos. It works well on locked-down club computers and still shows the full optimization and approval experience.",
+        title="Recommended demo path",
+        tone="warn",
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
 
 mode = st.radio(
     "Workflow Mode",
@@ -4566,6 +4676,7 @@ left_col, right_col = st.columns([1.25, 0.85], gap="large")
 
 with left_col:
     st.markdown('<div class="panel-card">', unsafe_allow_html=True)
+    pending_advanced_upload = build_pending_uploaded_file(st.session_state.get("advanced_pending_upload"))
     if mode == "Reliable Print Mode":
         st.markdown("### Step 1: Start Your Print")
         st.markdown(
@@ -4578,6 +4689,13 @@ with left_col:
             type=["stl", "obj", "3mf"],
             help="CipherSlice accepts production mesh uploads in STL, OBJ, or 3MF format.",
         )
+        if uploaded_file is None and pending_advanced_upload is not None and st.session_state.get("experience_mode") == "Advanced":
+            uploaded_file = pending_advanced_upload
+            render_soft_notice(
+                f"Loaded {pending_advanced_upload.name} from the Advanced page.",
+                title="Advanced upload ready",
+                tone="success",
+            )
     else:
         st.markdown("### Step 1: Blueprint Intake")
         st.markdown(
@@ -4592,6 +4710,13 @@ with left_col:
             type=["png", "jpg", "jpeg", "pdf"],
             help="Best results come from orthographic technical drawings with clear dimensions and units.",
         )
+        if uploaded_file is None and pending_advanced_upload is not None and st.session_state.get("experience_mode") == "Advanced":
+            uploaded_file = pending_advanced_upload
+            render_soft_notice(
+                f"Loaded {pending_advanced_upload.name} from the Advanced page.",
+                title="Advanced upload ready",
+                tone="success",
+            )
 
     st.markdown('<div class="setting-card">', unsafe_allow_html=True)
     printer = st.selectbox("Target Printer", list(PRINTER_PROFILES.keys()))
@@ -4703,34 +4828,6 @@ with left_col:
         value=True,
         help="CipherSlice will suggest or apply a scale correction when the model looks implausibly small or large, then report the longest corrected dimension so you can sanity-check it.",
     )
-    st.markdown(
-        """
-        <div class="workflow-style-card">
-            <div class="workflow-style-title">Choose Your Control Level</div>
-            <div class="workflow-style-copy">
-                Beginner keeps the setup simple and continues below. Advanced opens a dedicated workspace while still using the same live job underneath.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    workflow_col1, workflow_col2 = st.columns(2, gap="medium")
-    with workflow_col1:
-        if st.button(
-            "Beginner",
-            use_container_width=True,
-            type="primary" if st.session_state.get("experience_mode", "Beginner") == "Beginner" else "secondary",
-            key="workflow_beginner",
-        ):
-            st.session_state["experience_mode"] = "Beginner"
-    with workflow_col2:
-        if st.button(
-            "Advanced",
-            use_container_width=True,
-            type="primary" if st.session_state.get("experience_mode", "Beginner") == "Advanced" else "secondary",
-            key="workflow_advanced",
-        ):
-            open_advanced_workspace()
     experience_mode = st.session_state.get("experience_mode", "Beginner")
     nozzle_override = 0
     bed_override = 0
@@ -4856,6 +4953,7 @@ with left_col:
             },
             "approval_key": f"approve_{new_artifact_hash}",
         }
+        st.session_state.pop("advanced_pending_upload", None)
     st.markdown("</div>", unsafe_allow_html=True)
 
 with right_col:
@@ -4889,7 +4987,7 @@ with right_col:
         **Material profile:** `{filament}`  
         **Material strength:** `{FILAMENT_DETAILS[filament]['strength']}`  
         **Optimization mode:** `{quality_profile}` / `{print_goal}`  
-        **Support + adhesion:** `{support_strategy}` / `{adhesion_strategy}`  
+        **Support and adhesion:** `{support_strategy}` / `{adhesion_strategy}`  
         **Delivery mode:** `{delivery_mode}`  
         **Printer command style:** `{selected_printer_profile.get('gcode_flavor', 'Unknown')}`
         """
@@ -5022,7 +5120,7 @@ if active_job:
         f'<div class="state-banner {execution_class}"><strong>{execution_label}</strong><br/>{execution_copy}</div>',
         unsafe_allow_html=True,
     )
-    st.markdown("### Step 2: Review + Adjust")
+    st.markdown("### Step 2: Review and Adjust")
     st.markdown(
         '<div class="subsection-card"><div class="subsection-title">Live Plan</div>'
         f'<div class="subsection-copy">CipherSlice generated a first-pass plan for `{filename}`. '
@@ -5107,7 +5205,7 @@ if active_job:
     grouped_col1, grouped_col2 = st.columns(2, gap="medium")
     with grouped_col1:
         with st.container(border=True):
-            st.markdown("#### Machine + Finish")
+            st.markdown("#### Machine and Finish")
             editable_quality_profile = st.selectbox(
                 "Quality profile",
                 ["Balanced production", "Draft / fast iteration", "Detail / cosmetic"],
@@ -5138,7 +5236,7 @@ if active_job:
                 key=f"edit_speed_{artifact_hash}",
             )
         with st.container(border=True):
-            st.markdown("#### Structure + Support")
+            st.markdown("#### Structure and Support")
             editable_support_strategy = st.selectbox(
                 "Support strategy",
                 ["Auto", "Always on", "Disabled"],
@@ -5176,7 +5274,7 @@ if active_job:
             )
     with grouped_col2:
         with st.container(border=True):
-            st.markdown("#### Delivery + Release")
+            st.markdown("#### Delivery and Release")
             editable_delivery_mode = st.selectbox(
                 "Delivery mode",
                 DELIVERY_MODES,
@@ -5187,7 +5285,7 @@ if active_job:
             st.markdown(f"**Current path:** `{editable_delivery_mode}`")
             st.write(DELIVERY_MODE_DETAILS[editable_delivery_mode]["summary"])
         with st.container(border=True):
-            st.markdown("#### Material + Output")
+            st.markdown("#### Material and Output")
             editable_filament = st.selectbox(
                 "Filament",
                 FILAMENT_TYPES,
@@ -5306,7 +5404,7 @@ if active_job:
                     )
             with motion_col:
                 with st.container(border=True):
-                    st.markdown("#### Motion + shell tuning")
+                    st.markdown("#### Motion and shell tuning")
                     editable_outer_wall_speed = st.number_input(
                         "Outer wall speed (mm/s)",
                         min_value=10,
@@ -5366,7 +5464,7 @@ if active_job:
                     )
             with support_col:
                 with st.container(border=True):
-                    st.markdown("#### Surface + structure")
+                    st.markdown("#### Surface and structure")
                     editable_infill_pattern = st.selectbox(
                         "Infill pattern",
                         ["Gyroid", "Grid", "Lines", "Cubic"],
@@ -5691,7 +5789,7 @@ if active_job:
         encrypted_artifact, encryption_salt = encrypt_artifact(primary_artifact, encryption_passphrase)
 
     st.write("")
-    st.markdown("### Step 3: Plan + Delivery Package")
+    st.markdown("### Step 3: Plan and Delivery Package")
     if agent_runtime_meta["using_live_workers"]:
         st.caption(f"{agent_runtime_meta['status']}: {agent_runtime_meta['detail']}")
     elif agent_runtime_meta["status"] != "Disabled":
@@ -5859,18 +5957,12 @@ if active_job:
     with result_col:
         st.markdown('<div class="panel-card">', unsafe_allow_html=True)
         st.markdown("### Current Plan Workspace")
-        summary_col1, summary_col2, summary_col3 = st.columns(3, gap="medium")
+        summary_col1, summary_col3 = st.columns(2, gap="medium")
         with summary_col1:
             with st.container(border=True):
                 st.markdown("#### Ready Now")
                 st.markdown(f"**{phase_title}**")
                 st.write(phase_copy)
-        with summary_col2:
-            with st.container(border=True):
-                st.markdown("#### Output Source")
-                st.markdown(f"**{output_source_title}**")
-                st.write(output_source_copy)
-                st.caption(f"Current output state: {output_source_state}")
         with summary_col3:
             with st.container(border=True):
                 st.markdown("#### Still To Connect")
@@ -5892,7 +5984,7 @@ if active_job:
                 st.session_state[workspace_key] = "Tuning"
             review_area = st.radio(
                 "Review workspace",
-                ["Overview", "Fit + 3D", "Tuning", "Compare", "Release"],
+                ["Overview", "Fit and 3D", "Tuning", "Compare", "Release"],
                 horizontal=True,
                 key=workspace_key,
             )
@@ -5943,7 +6035,7 @@ if active_job:
             if review_area == "Overview":
                 with st.container(border=True):
                     st.markdown('<div class="review-section"><div class="review-kicker">Machine Fit</div><div class="review-copy">This section explains how the selected printer itself shapes the safe print strategy before any slicer or hardware handoff happens.</div>', unsafe_allow_html=True)
-                    st.markdown("#### Printer + Material Reality Check")
+                    st.markdown("#### Printer and Material Reality Check")
                     machine_col1, machine_col2 = st.columns(2, gap="medium")
                     with machine_col1:
                         for label, value in machine_profile_notes:
@@ -6002,7 +6094,7 @@ if active_job:
                         st.caption(note)
                     st.markdown("</div>", unsafe_allow_html=True)
 
-            if review_area == "Fit + 3D":
+            if review_area == "Fit and 3D":
                 with st.container(border=True):
                     st.markdown('<div class="review-section"><div class="review-kicker">Fit Preview</div><div class="review-copy">A visual sizing check so users can understand bed fit before digging into deeper tuning.</div>', unsafe_allow_html=True)
                     st.markdown("#### Print Fit Studio")
@@ -6050,7 +6142,7 @@ if active_job:
                     st.markdown("</div></div></div>", unsafe_allow_html=True)
                     st.markdown("</div>", unsafe_allow_html=True)
 
-            if review_area == "Fit + 3D":
+            if review_area == "Fit and 3D":
                 with st.container(border=True):
                     st.markdown('<div class="review-section"><div class="review-kicker">3D Inspection</div><div class="review-copy">This is the first true interactive part view in CipherSlice. Users can orbit the model, inspect scale and shape, and then compare orientation suggestions before trusting the plan.</div>', unsafe_allow_html=True)
                     st.markdown("#### Interactive Part View")
@@ -6072,7 +6164,11 @@ if active_job:
                     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
                     st.markdown("#### Orientation Suggestions")
                     if mesh_analysis and mesh_analysis.get("orientation_shift_note"):
-                        st.info(str(mesh_analysis["orientation_shift_note"]))
+                        render_soft_notice(
+                            str(mesh_analysis["orientation_shift_note"]),
+                            title="Orientation note",
+                            tone="neutral",
+                        )
                     st.markdown(
                         build_orientation_candidate_preview((mesh_analysis or {}).get("orientation_candidates", [])),
                         unsafe_allow_html=True,
@@ -6093,7 +6189,7 @@ if active_job:
                                     st.rerun()
                     st.markdown("</div>", unsafe_allow_html=True)
 
-            if review_area == "Fit + 3D":
+            if review_area == "Fit and 3D":
                 with st.container(border=True):
                     st.markdown('<div class="review-section"><div class="review-kicker">Geometry Review</div><div class="review-copy">This section explains how healthy the mesh looks, how it fits the machine, and why CipherSlice trusts or questions the geometry.</div>', unsafe_allow_html=True)
                     st.markdown("#### Shape Health Review")
@@ -6117,8 +6213,10 @@ if active_job:
                             )
                     with geo_col2:
                         if mesh_analysis and mesh_analysis.get("scale_factor") and float(mesh_analysis["scale_factor"]) != 1.0:
-                            st.info(
-                                f"CipherSlice applied a scale correction of `{float(mesh_analysis['scale_factor']):.2f}x` so the model could be reviewed against the selected printer more realistically."
+                            render_soft_notice(
+                                f"CipherSlice applied a scale correction of {float(mesh_analysis['scale_factor']):.2f}x so the model could be reviewed against the selected printer more realistically.",
+                                title="Scale correction applied",
+                                tone="warn",
                             )
                         if mesh_analysis and mesh_analysis.get("issues"):
                             st.markdown("**Blockers**")
@@ -6283,7 +6381,7 @@ if active_job:
                 snapshot_labels = [str(snapshot["label"]) for snapshot in snapshot_options]
                 with st.container(border=True):
                     st.markdown('<div class="review-section"><div class="review-kicker">Snapshot Lab</div><div class="review-copy">Save checkpoints, compare two tuning paths, and restore a previous idea without losing the rest of the job context.</div>', unsafe_allow_html=True)
-                    st.markdown("#### Plan Snapshots + Compare")
+                    st.markdown("#### Plan Snapshots and Compare")
                     snap_action_col1, snap_action_col2 = st.columns(2, gap="medium")
                     with snap_action_col1:
                         left_snapshot_label = st.selectbox(
@@ -6390,7 +6488,11 @@ if active_job:
                         "</div>",
                         unsafe_allow_html=True,
                     )
-                    st.info(f"Best safe option right now: {best_safe_option}.")
+                    render_soft_notice(
+                        f"{best_safe_option}.",
+                        title="Best safe option right now",
+                        tone="neutral",
+                    )
                     st.markdown("</div>", unsafe_allow_html=True)
             if mode == "Reliable Print Mode" and review_area == "Release":
                 with st.container(border=True):
@@ -6414,9 +6516,17 @@ if active_job:
                     st.markdown("**Pre-slicer launch check**")
                     pre_slicer_ready = bool(slicer_path) and not objections
                     if pre_slicer_ready:
-                        st.success("The software-side plan is ready to hand into a deterministic slicer engine for real toolpath generation.")
+                        render_soft_notice(
+                            "The software-side plan is ready to hand into a deterministic slicer engine for real toolpath generation.",
+                            title="Pre-slicer launch check",
+                            tone="success",
+                        )
                     else:
-                        st.warning("CipherSlice is still holding full release. Clear the blockers above and connect a supported slicer backend before calling this printer-ready.")
+                        render_soft_notice(
+                            "CipherSlice is still holding full release. Clear the blockers above and connect a supported slicer backend before calling this printer-ready.",
+                            title="Pre-slicer launch check",
+                            tone="warn",
+                        )
                     st.markdown("</div>", unsafe_allow_html=True)
             if review_area == "Release":
                 st.markdown(
@@ -6427,9 +6537,9 @@ if active_job:
             if review_area == "Release":
                 st.markdown(
                 "<div class='summary-strip'>"
-                f"<div class='summary-pill'><strong>Part + printer</strong>{filename}<br>{printer}</div>"
+                f"<div class='summary-pill'><strong>Part and printer</strong>{filename}<br>{printer}</div>"
                 f"<div class='summary-pill'><strong>Layer / speed</strong>{optimized_plan['layer_height']} mm<br>{optimized_plan['print_speed']} mm/s</div>"
-                f"<div class='summary-pill'><strong>Material + output</strong>{filament}<br>{output_type_title}</div>"
+                f"<div class='summary-pill'><strong>Material and output</strong>{filament}<br>{output_type_title}</div>"
                 f"<div class='summary-pill'><strong>Approval state</strong>{'Ready for approval' if release_allowed else 'Held for review'}<br>{overall_confidence * 100:.0f}% confidence</div>"
                 "</div>",
                 unsafe_allow_html=True,
@@ -6456,14 +6566,14 @@ if active_job:
                             <div class="manifest-line"><span class="manifest-key"><strong>Infill pattern:</strong></span> {optimized_plan.get('infill_pattern', 'Gyroid')}</div>
                         </div>
                         <div class="manifest-section">
-                            <div class="manifest-section-title">Motion + First Layer</div>
+                            <div class="manifest-section-title">Motion and First Layer</div>
                             <div class="manifest-line"><span class="manifest-key"><strong>Outer / inner / travel:</strong></span> {optimized_plan.get('outer_wall_speed', optimized_plan['print_speed'])} / {optimized_plan.get('inner_wall_speed', optimized_plan['print_speed'])} / {optimized_plan.get('travel_speed', optimized_plan['print_speed'])} mm/s</div>
                             <div class="manifest-line"><span class="manifest-key"><strong>First layer:</strong></span> {optimized_plan.get('first_layer_height', optimized_plan['layer_height'])} mm / {optimized_plan.get('first_layer_speed', 20)} mm/s / {optimized_plan.get('first_layer_flow', 100)}%</div>
                             <div class="manifest-line"><span class="manifest-key"><strong>Retraction / acceleration:</strong></span> {optimized_plan.get('retraction_length', 1.2)} mm / {optimized_plan.get('acceleration', 3000)} mm/s^2</div>
                             <div class="manifest-line"><span class="manifest-key"><strong>Jerk / seam:</strong></span> {optimized_plan.get('jerk_control', 8)} / {optimized_plan.get('seam_position', 'Rear')}</div>
                         </div>
                         <div class="manifest-section">
-                            <div class="manifest-section-title">Support + Delivery</div>
+                            <div class="manifest-section-title">Support and Delivery</div>
                             <div class="manifest-line"><span class="manifest-key"><strong>Support:</strong></span> {'Enabled' if optimized_plan['support_enabled'] else 'Disabled'} / {optimized_plan.get('support_pattern', 'Lines')} / {'Interface on' if optimized_plan.get('support_interface') else 'Interface off'}</div>
                             <div class="manifest-line"><span class="manifest-key"><strong>Adhesion:</strong></span> {optimized_plan['adhesion']} / brim {optimized_plan.get('brim_width', 0)} mm / skirt {optimized_plan.get('skirt_loops', 0)} loops</div>
                             <div class="manifest-line"><span class="manifest-key"><strong>Delivery mode:</strong></span> {delivery_mode}</div>
@@ -6476,11 +6586,12 @@ if active_job:
             )
             if review_area == "Overview":
                 st.markdown("### Best Next Move")
-                st.info(next_action)
+                render_soft_notice(next_action, title="Best next move", tone="neutral")
             if review_area == "Overview" and not slicer_path:
-                st.warning(
-                    "Production release is still held by design because no slicer backend is connected. "
-                    "That is why the print-file score stays capped and different files can still share similar high-level settings."
+                render_soft_notice(
+                    "Production release is still held by design because no slicer backend is connected. That is why the print-file score stays capped and different files can still share similar high-level settings.",
+                    title="Why release is still held",
+                    tone="warn",
                 )
             status_rows = build_status_board(
                 mode,
@@ -6598,9 +6709,10 @@ if active_job:
                         unsafe_allow_html=True,
                     )
             if review_area == "Release" and delivery_mode == "SD card export":
-                st.warning(
-                    "SD card mode is compatible with many printers, but it is not a secure streaming channel. Once the file is exported, "
-                    "CipherSlice cannot guarantee one-time use, remote revocation, or end-to-end hardware authentication."
+                render_soft_notice(
+                    "SD card mode is compatible with many printers, but it is not a secure streaming channel. Once the file is exported, CipherSlice cannot guarantee one-time use, remote revocation, or end-to-end hardware authentication.",
+                    title="SD card limitations",
+                    tone="warn",
                 )
                 st.markdown("**SD card operator checklist**")
                 st.markdown("- Confirm the printer model and plastic profile match the exported plan.")
@@ -6827,21 +6939,32 @@ if active_job:
                 for reason in objections:
                     st.markdown(f"- {reason}")
             elif release_allowed:
-                st.success("All agents cleared the release gate with no unresolved objections.")
+                render_soft_notice(
+                    "All agents cleared the release gate with no unresolved objections.",
+                    title="Release gate",
+                    tone="success",
+                )
 
             st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
             if mode == "Reliable Print Mode":
-                st.markdown("##### Real G-code Preview" if real_gcode else "##### Planning Preview")
+                st.markdown("##### Print File Preview")
                 if real_gcode:
-                    st.success("This preview is real PrusaSlicer-generated G-code from the current job.")
+                    render_soft_notice(
+                        "This preview is real PrusaSlicer-generated G-code from the current job.",
+                        title="Output source",
+                        tone="success",
+                    )
                 elif slicer_path:
-                    st.warning(
-                        "Prusa is installed, but this run still fell back to preview output. Treat this block as planning-stage output until the slicer run is fully validated."
+                    render_soft_notice(
+                        "Prusa is installed, but this run still fell back to preview output. Treat this block as planning-stage output until the slicer run is fully validated.",
+                        title="Output source",
+                        tone="warn",
                     )
                 else:
-                    st.info(
-                        "Mesh uploads are the right path for real fabrication, but this environment still needs a slicer backend "
-                        "such as `PrusaSlicer`, `OrcaSlicer`, or `CuraEngine` before CipherSlice can claim true production release."
+                    render_soft_notice(
+                        "Mesh uploads are the right path for real fabrication, but this environment still needs a slicer backend such as PrusaSlicer, OrcaSlicer, or CuraEngine before CipherSlice can claim true production release.",
+                        title="Output source",
+                        tone="neutral",
                     )
                 st.code(primary_artifact, language="gcode")
             else:
