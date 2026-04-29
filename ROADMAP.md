@@ -1,96 +1,98 @@
-# CipherSlice Post-Phase-13 Roadmap
+# CipherSlice Demo-Finish Roadmap
 
-CipherSlice now has a much stronger planning foundation in place:
+This roadmap replaces the longer R&D path with a sharper finish plan for a demo-ready product.
 
-- Phase 1: trust, clarity, and safer preview language
-- Phase 2: beginner vs advanced workflow shaping
-- Phase 3: broader printer and material coverage
-- Phase 4: stronger geometry review, fit logic, and scale intelligence
-- Phase 5: editable planning and recommendation comparison
-- Phase 6: cleaner output truthfulness and slicer handoff framing
-- Phase 7: deeper machine and material realism
-- Phase 8: stronger geometry intelligence, fit nuance, and risk grouping
-- Phase 9: cleaner review UX and information design
-- Phase 10: deeper advanced tuning controls
-- Phase 11: snapshot, comparison, and iteration tools
-- Phase 12: richer printability checks
-- Phase 13: interactive preview and orientation support
+CipherSlice already has:
 
-These are the next 50 optimal build steps from the current state up to the point where real slicer generation and physical printer connection become the main blocker.
+- guided vs advanced workflow separation
+- machine and material planning
+- geometry review and fit checks
+- interactive preview
+- approval and release flow
+- a verified PrusaSlicer backend path on the local machine
 
-## Phase 14: Visual Review Depth
+The goal now is not to rival a slicer.
 
-1. Add orientation preset buttons directly inside the 3D preview instead of only using a dropdown.
-2. Let users click an orientation suggestion card to focus the 3D preview on that posture.
-3. Add a visible build-plate occupancy tint that changes as the part approaches bed limits.
-4. Add support-likelihood hotspots so users can visually see where support burden probably lives.
-5. Add a likely seam-region overlay that responds to seam-position changes.
-6. Add a simple first-layer stability overlay that highlights narrow or risky bed contact zones.
-7. Add a scale sanity overlay that makes accidental tiny or huge parts obvious at a glance.
-8. Add a visual height-risk treatment for tall and tip-prone parts.
-9. Add snapshot thumbnails for “before” and “recommended orientation” comparisons.
-10. Add a one-click visual export for demos, reports, and club review.
+The goal is to finish CipherSlice as a:
 
-## Phase 15: Smarter Editable Planning
+- print planning app
+- machine/material review layer
+- slicer handoff surface
+- approval and export tool
 
-11. Add a real recommended-vs-current inspector that groups changes by risk instead of one long list.
-12. Let users pin a setting as “do not auto-adjust” before geometry refinement runs.
-13. Add a stronger “why CipherSlice changed this” explainer beside major recommendations.
-14. Add printer-safe guardrails that warn when advanced overrides move into risky ranges.
-15. Add an explicit cost/time tradeoff meter for speed, detail, and material changes.
-16. Add a stronger beginner-safe summary that hides low-value advanced noise by default.
-17. Add a reusable custom profile save/load system for hobbyists and clubs.
-18. Add a better side-by-side material comparison workspace with clearer winner language.
-19. Add a better side-by-side printer comparison workspace with faster recommendation summaries.
-20. Add a “restore only risky settings” action instead of resetting everything.
+## Phase A: Demo Truthfulness
 
-## Phase 16: Geometry Diagnostics Plus
+1. Make the app always state whether output is real slicer G-code or planning preview.
+2. Show slicer success and slicer failure messages in plain English.
+3. Keep fallback output clearly labeled as not printer-ready.
+4. Remove any wording that implies real production output when slicing failed.
+5. Tighten approval copy so users understand exactly what the checkbox unlocks.
+6. Keep dimensions and fit language consistent across all sections.
+7. Show scale-correction notes in one obvious place.
+8. Make the release page clearly explain what is ready now vs what is still needed.
+9. Keep developer-facing setup details downloadable, not front-and-center.
+10. Make the review summary readable at a glance for judges and new users.
 
-21. Add detection for isolated islands that may print in midair or start too late.
-22. Add detection for very small hole features that likely close up after printing.
-23. Add a stronger wall-thickness estimate that compares feature size against nozzle and line width.
-24. Add an enclosure-sensitive warp severity model for hotter materials.
-25. Add a risk model for large flat tops that may sag or pill owing to sparse support below.
-26. Add a more realistic bridge-span estimate tied to printer class and material family.
-27. Add a support-removal difficulty estimate for cosmetic vs functional faces.
-28. Add a simpler “fragile print zones” summary for beginners.
-29. Add a more detailed “fix this by changing orientation / support / wall count” recommendation set.
-30. Add a geometry confidence drill-down so users can see what pushed the score down.
+## Phase B: Demo Polish
 
-## Phase 17: Slicer Handoff Readiness
+11. Keep Beginner simple and continuous on the main flow.
+12. Keep Advanced as its own cleaner workspace.
+13. Improve the top-level navigation language so it feels more like a product.
+14. Reduce visual clutter in long review sections.
+15. Keep the 3D preview and fit sections in their own obvious blocks.
+16. Make the release page read like a professional handoff screen.
+17. Make the output summary more compact and easier to scan.
+18. Keep support, adhesion, and risk notes grouped instead of scattered.
+19. Improve the visual hierarchy of warnings, success, and blocked states.
+20. Make the public-facing app feel clean even when setup is incomplete.
 
-31. Add slicer-profile export packs for PrusaSlicer-style backends with cleaner naming and versioning.
-32. Add a slicer capability check that explains exactly why a configured backend is or is not usable.
-33. Add per-printer G-code flavor validation with more human-friendly error messages.
-34. Add start/end G-code templates that can be saved for custom machine workflows.
-35. Add safer profile packaging for Bambu-, Prusa-, Klipper-, and generic-Marlin-style machines.
-36. Add a final pre-slicer checklist screen that proves the plan is ready for deterministic generation.
-37. Add a “what the slicer will decide next” explainer so users know where AI stops and slicing begins.
-38. Add artifact naming conventions for school, club, and repeat-production jobs.
-39. Add a clearer operator handoff bundle that separates preview files from slicer-ready files.
-40. Add a deterministic handoff audit trail that records the approved plan, profile, and release path.
+## Phase C: Real Slicer Integration
 
-## Phase 18: Deployment and Repeat Use
+21. Detect PrusaSlicer reliably on Windows.
+22. Allow an explicit Prusa path via environment variable.
+23. Build a stable Prusa-style config from the current live plan.
+24. Feed STL, OBJ, or 3MF into the slicer through the app path.
+25. Capture real G-code output from the slicer process.
+26. Surface slicing failures in plain English.
+27. Keep one supported “happy path” reliable before adding more printer families.
+28. Confirm the output preview comes from real G-code when slicing succeeds.
+29. Confirm downloads use the real slicer output instead of fallback output when available.
+30. Keep release confidence aligned with the real backend result.
 
-41. Add project save/load so users can return to a job without restarting the workflow.
-42. Add a classroom or club demo mode with cleaner defaults and less advanced clutter.
-43. Add a repeat-job template mode for printers that get used often by the same group.
-44. Add better error recovery when uploads, geometry reads, or preview generation partially fail.
-45. Add mobile-safe and Chromebook-safe fallback UI decisions for lighter environments.
-46. Add a lighter “quick review” page for users who only need the summary and download path.
-47. Add a richer README walkthrough for setting up slicers, custom printers, and deployment.
-48. Add a private/public deployment checklist so the site can be hidden or safely shown when needed.
-49. Add a “printer connection readiness” dashboard that shows every remaining blocker clearly.
-50. Add a final stop-point screen that says the next serious leap is real slicer generation and physical printer access.
+## Phase D: Public Demo Readiness
+
+31. Decide which local flow is solid enough to demonstrate repeatedly.
+32. Freeze the feature set for the demo.
+33. Test at least two different real mesh files through the local app.
+34. Confirm the app can explain failure honestly when slicing fails.
+35. Confirm the app can export something useful in both success and failure states.
+36. Prepare one simple beginner-friendly demo path.
+37. Prepare one stronger advanced-user demo path.
+38. Keep screenshots or notes of a successful real slice for backup.
+39. Make the README explain what works today.
+40. Make the README explain what still depends on local slicer/backend hosting.
+
+## Phase E: Public Backend Hosting
+
+41. Keep Streamlit for the current demo if time is too tight.
+42. Decide whether the public backend needs Docker or a more custom Python host.
+43. Choose a host that can run Python and installed slicer binaries.
+44. Install PrusaSlicer on that host.
+45. Point the hosted app to the slicer executable.
+46. Test one real upload on the hosted backend.
+47. Add a public URL only after the backend result is trustworthy.
+48. Keep the current Streamlit public app as a planning/demo branch if needed.
+49. Add a cleaner domain later, after the backend host is stable.
+50. Treat printer connection as the next milestone after public slicing works.
 
 ## Stop Point
 
-After Step 50, the work stops being mostly software product shaping.
+After these 50 steps, CipherSlice is no longer “just a mockup.”
 
-The next blocker becomes real-world execution:
+It becomes a real planning and slicer-handoff product with:
 
-- a trusted slicer backend installed and callable
-- printer profiles validated against that slicer
-- a real handoff path such as SD card, local connector, or printer API
-- a reachable physical printer
-- calibration prints and hardware feedback from actual machines
+- real file upload
+- real geometry review
+- real slicer-backed output on supported paths
+- honest preview fallback when the backend fails
+- a clean demo story for judges and early users

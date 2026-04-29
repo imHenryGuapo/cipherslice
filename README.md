@@ -7,6 +7,62 @@ CipherSlice is a Streamlit-based 3D printing control plane for:
 - approval-gated release
 - SD card, manual download, and secure connector delivery paths
 
+## What CipherSlice Is
+
+CipherSlice is a print planning and slicer-handoff app.
+
+It is designed to help a user:
+
+- upload a real part file
+- understand machine and material tradeoffs
+- review fit, scale, support, and geometry risk
+- tune the plan in a beginner or advanced path
+- export or hand off the job cleanly
+
+CipherSlice is not trying to replace a full slicer right now.
+
+Instead, it sits in front of the slicer and makes the workflow easier to understand, safer to review, and cleaner to approve.
+
+## What It Does Today
+
+CipherSlice already supports:
+
+- real mesh upload for STL, OBJ, and 3MF workflows
+- blueprint-intake mode for structured drawing review
+- beginner inline flow and separate advanced workspace flow
+- printer and filament planning with broader machine/material coverage
+- scale, fit, and geometry review
+- interactive 3D preview support
+- approval-gated output and handoff packaging
+- local PrusaSlicer-backed slicing path when a supported backend is installed
+
+## How This Should Be Taken
+
+The right way to present CipherSlice is:
+
+- a real planning and review product
+- a front end for machine/material guidance
+- a slicer handoff surface
+- an approval and export layer before hardware execution
+
+The safest honest framing is:
+
+- CipherSlice is already useful as a planning and review tool
+- CipherSlice becomes much more powerful when a real slicer backend is connected
+- direct printer connection is a later milestone, not the first requirement
+
+## Short Description
+
+Use this when you need a short description for a demo, repo, or submission:
+
+> CipherSlice is a guided 3D print planning and slicer-handoff app that helps users upload a part, review fit and material risk, tune the job in beginner or advanced mode, and move toward real slicer-backed output without dumping them directly into a full slicer workflow.
+
+## How To Explain It Live
+
+Use this when someone asks what the project does:
+
+> CipherSlice is the layer before the printer. It helps people understand what they are about to print, what machine and material choices make sense, what risks exist, and whether the job is ready to move into a real slicer and then toward hardware.
+
 ## Run locally
 
 From `C:\Users\Owner\OneDrive\Desktop\3D_slicer`:

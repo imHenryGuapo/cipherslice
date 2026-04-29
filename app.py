@@ -229,40 +229,110 @@ PRINTER_PROFILES = {
     },
 }
 
-FILAMENT_TYPES = ["PLA", "PETG", "ABS", "ASA", "TPU", "Nylon", "PC", "CF Nylon"]
+FILAMENT_TYPES = [
+    "PLA",
+    "PLA Silk",
+    "PLA Wood",
+    "PLA-GF",
+    "PETG",
+    "PETG-GF",
+    "ABS",
+    "ASA",
+    "TPU",
+    "Nylon",
+    "Glass-Fiber Nylon",
+    "CF Nylon",
+    "PC",
+]
+
+FILAMENT_BASE_MAP = {
+    "PLA": "PLA",
+    "PLA Silk": "PLA",
+    "PLA Wood": "PLA",
+    "PLA-GF": "PLA",
+    "PETG": "PETG",
+    "PETG-GF": "PETG",
+    "ABS": "ABS",
+    "ASA": "ASA",
+    "TPU": "TPU",
+    "Nylon": "Nylon",
+    "Glass-Fiber Nylon": "Nylon",
+    "CF Nylon": "CF Nylon",
+    "PC": "PC",
+}
+
+ABRASIVE_FILAMENTS = {
+    "PLA-GF",
+    "PETG-GF",
+    "Glass-Fiber Nylon",
+    "CF Nylon",
+}
 
 FILAMENT_DETAILS = {
     "PLA": {
         "summary": "Easiest everyday material. Great for clean prototypes, school demos, and rigid parts that do not need high heat resistance.",
         "warning": "Can soften in hot cars, direct sun, or high-heat environments.",
+        "strength": "Easy print, lower heat resistance, good all-purpose rigidity.",
+    },
+    "PLA Silk": {
+        "summary": "Decorative PLA blend with a shinier finish. Great for display parts and presentation pieces.",
+        "warning": "Looks nice, but often sacrifices a little strength and dimensional honesty compared with plain PLA.",
+        "strength": "Best for appearance-first prints, not heavy-duty parts.",
+    },
+    "PLA Wood": {
+        "summary": "PLA blend made for a wood-like look and feel. Useful for props, decor, and visual prototypes.",
+        "warning": "Can be more brittle, can vary by brand, and may prefer a wider nozzle if particles are coarse.",
+        "strength": "Looks-first material with modest strength.",
+    },
+    "PLA-GF": {
+        "summary": "Glass-fiber reinforced PLA for stiffer everyday parts with more bite than plain PLA.",
+        "warning": "Abrasive filler can wear softer nozzles faster. Hardened or wear-resistant nozzles are the safer long-term path.",
+        "strength": "Stiffer than plain PLA, still easier than hot engineering plastics.",
     },
     "PETG": {
         "summary": "Stronger and more heat-tolerant than PLA. Good for durable utility parts and light outdoor use.",
         "warning": "Can string more easily and often benefits from slower tuning than PLA.",
+        "strength": "Good balance of toughness, layer bonding, and everyday durability.",
+    },
+    "PETG-GF": {
+        "summary": "Glass-fiber reinforced PETG for tougher utility parts that need more stiffness than plain PETG.",
+        "warning": "Abrasive filler means nozzle wear matters. Hardened nozzles are strongly recommended for repeated use.",
+        "strength": "Tougher and stiffer than PETG, with more machine wear risk.",
     },
     "ABS": {
         "summary": "Good for tougher, warmer-use parts when you need more heat resistance than PLA or PETG.",
         "warning": "Usually prefers an enclosure and stable temperatures to avoid warping.",
+        "strength": "Better heat resistance and toughness than everyday PLA/PETG.",
     },
     "ASA": {
         "summary": "Outdoor-friendly cousin to ABS. Useful when UV resistance and better weather tolerance matter.",
         "warning": "Still prefers an enclosure and can warp if the environment is too drafty.",
+        "strength": "Good outdoor durability with stronger weather resistance than ABS.",
     },
     "TPU": {
         "summary": "Flexible material for grips, bumpers, and soft-contact parts.",
         "warning": "Prints slower than rigid plastics and needs gentler retraction and motion settings.",
+        "strength": "Flexible rather than rigid. Great for impact and bend, not stiffness.",
     },
     "Nylon": {
         "summary": "Strong and durable engineering plastic with good toughness for functional parts.",
-        "warning": "Can absorb moisture quickly and usually benefits from dry storage and controlled printing conditions.",
+        "warning": "High-moisture-risk material. Dry storage, dryer use, and stable print conditions matter a lot or print quality can fall apart fast.",
+        "strength": "Very tough with strong layer bonding when dried and printed well.",
+    },
+    "Glass-Fiber Nylon": {
+        "summary": "Glass-fiber nylon for stiffer technical parts that still want nylon toughness underneath.",
+        "warning": "Abrasive filler plus moisture sensitivity is a serious combo. Use a hardened nozzle, keep the filament dry, and expect more machine wear than plain nylon.",
+        "strength": "Stiffer than plain nylon, with stronger machine demands.",
     },
     "PC": {
         "summary": "High-strength, higher-heat engineering material for demanding parts.",
         "warning": "Often needs a hotter setup, enclosure support, and careful warping control.",
+        "strength": "High heat and strength potential, but much less forgiving to print.",
     },
     "CF Nylon": {
         "summary": "Carbon-fiber reinforced nylon for rigid, technical parts that need better stiffness than plain nylon.",
-        "warning": "Usually wants a hardened nozzle and still needs good drying and careful printer prep.",
+        "warning": "Very high caution material. It is abrasive, wants a hardened or wear-resistant nozzle, needs drying, and can punish casual machine setups quickly.",
+        "strength": "Excellent stiffness-to-weight for technical parts, but high setup demand.",
     },
 }
 
@@ -1001,7 +1071,8 @@ def build_printer_material_notes(
 ) -> list[str]:
     notes: list[str] = []
     family = str(printer_profile.get("family", "")).lower()
-    filament_key = filament.lower()
+    base_filament = get_base_filament(filament)
+    filament_key = base_filament.lower()
     open_frame_family = any(
         tag in family for tag in ("a1", "mk", "ender", "kobra", "open-frame", "bedslinger")
     )
@@ -1027,9 +1098,21 @@ def build_printer_material_notes(
         notes.append(
             "Flexible TPU usually behaves better with slower motion and steadier filament feeding than rigid plastics."
         )
+    if filament_key == "nylon":
+        notes.append(
+            "Nylon is one of the easiest materials to underestimate. Moisture control, a stable print environment, and patient tuning matter much more here than they do for PLA."
+        )
+    if is_abrasive_filament(filament):
+        notes.append(
+            "This filament includes abrasive fiber, so a hardened or wear-resistant nozzle is strongly recommended before repeated use."
+        )
     if filament_key == "cf nylon" and nozzle_diameter <= 0.4:
         notes.append(
             "Carbon-fiber nylon is tougher on smaller nozzles. A hardened nozzle and a less fragile machine path are the safer choice."
+        )
+    if filament == "Glass-Fiber Nylon" and nozzle_diameter <= 0.4:
+        notes.append(
+            "Glass-fiber nylon can wear softer nozzles surprisingly fast. A hardened nozzle is the safer match, especially on long or repeated jobs."
         )
     if nozzle_diameter >= 0.6:
         notes.append(
@@ -1155,6 +1238,8 @@ def build_print_engine_setup_notes(
 
         Expected environment variable:
         CIPHERSLICE_SLICER_PATH=<full path to PrusaSlicer, OrcaSlicer, or Slic3r console executable>
+        Optional Prusa-specific variable:
+        CIPHERSLICE_PRUSASLICER_PATH=<full path to prusa-slicer-console.exe>
 
         Diagnostics:
         {chr(10).join(f'- {note}' for note in engine_diagnostics)}
@@ -1164,6 +1249,8 @@ def build_print_engine_setup_notes(
         - The slicer backend is what turns the approved model and settings into real production G-code.
         - Hardware delivery can stay as SD card or manual download until a connector is installed later.
         - Raw engine command details stay out of the website so the customer flow stays clean.
+        - CLI means command-line interface: a slicer program the app can launch in the background without opening the full visual editor.
+        - On Windows, PrusaSlicer usually exposes prusa-slicer-console.exe for scripted slicing.
         """
     ).strip()
 
@@ -1619,6 +1706,22 @@ def set_delivery_mode(mode_name: str) -> None:
 
 def set_experience_mode(mode_name: str) -> None:
     st.session_state["experience_mode"] = mode_name
+
+
+def open_guided_workspace() -> None:
+    st.session_state["experience_mode"] = "Beginner"
+    st.switch_page("app.py")
+
+
+def open_advanced_workspace() -> None:
+    st.session_state["experience_mode"] = "Advanced"
+    st.switch_page("pages/Advanced_Workspace.py")
+
+
+def return_to_guided_workspace(target: str | None = None) -> None:
+    if target:
+        st.session_state["review_workspace_target"] = target
+    st.switch_page("app.py")
 
 
 def clear_active_job() -> None:
@@ -2095,9 +2198,20 @@ def resolve_printer_profile(
 
 def get_profile_material_value(profile: dict[str, object], bucket: str, filament: str) -> int:
     values = dict(profile.get(bucket, {}))
+    base_filament = FILAMENT_BASE_MAP.get(filament, filament)
     if filament in values:
         return int(values[filament])
+    if base_filament in values:
+        return int(values[base_filament])
     return int(values.get("PLA", 0))
+
+
+def get_base_filament(filament: str) -> str:
+    return FILAMENT_BASE_MAP.get(filament, filament)
+
+
+def is_abrasive_filament(filament: str) -> bool:
+    return filament in ABRASIVE_FILAMENTS
 
 
 def recommend_next_action(
@@ -2622,13 +2736,15 @@ def build_machine_profile_notes(
     notes.append(("Heated bed", "Yes" if bool(printer_profile.get("heated_bed", True)) else "No"))
     notes.append(("Heated chamber", "Yes" if bool(printer_profile.get("heated_chamber", False)) else "No"))
 
-    filament_key = filament.lower()
+    filament_key = get_base_filament(filament).lower()
     if filament_key in {"abs", "asa", "nylon", "pc", "cf nylon"}:
         notes.append(("Material fit", "This material is more demanding and benefits from a stable heat environment."))
     elif filament_key == "tpu":
         notes.append(("Material fit", "This material is flexible, so slower motion and cleaner filament feeding are safer."))
     else:
         notes.append(("Material fit", "This material is generally forgiving on a wider range of hobby printers."))
+    if is_abrasive_filament(filament):
+        notes.append(("Nozzle wear", "A hardened or wear-resistant nozzle is the safer long-term match for this fiber-filled material."))
     return notes
 
 
@@ -2659,6 +2775,10 @@ def detect_slicer_backend() -> tuple[str | None, str | None]:
     if configured and os.path.exists(configured):
         return "Configured Slicer", configured
 
+    configured_prusa = os.getenv("CIPHERSLICE_PRUSASLICER_PATH", "").strip()
+    if configured_prusa and os.path.exists(configured_prusa):
+        return "PrusaSlicer", configured_prusa
+
     candidates = {
         "PrusaSlicer": "prusa-slicer-console",
         "PrusaSlicer Windows": "prusa-slicer-console.exe",
@@ -2676,6 +2796,9 @@ def detect_slicer_backend() -> tuple[str | None, str | None]:
 
     common_paths = [
         r"C:\Program Files\Prusa3D\PrusaSlicer\prusa-slicer-console.exe",
+        r"C:\Program Files\Prusa3D\PrusaSlicer\prusa-slicer.exe",
+        os.path.join(os.getenv("LOCALAPPDATA", ""), "Programs", "PrusaSlicer", "prusa-slicer-console.exe"),
+        os.path.join(os.getenv("LOCALAPPDATA", ""), "Programs", "PrusaSlicer", "prusa-slicer.exe"),
         r"C:\Program Files\OrcaSlicer\OrcaSlicer.exe",
         r"C:\Program Files\UltiMaker Cura 5.0\CuraEngine.exe",
         r"C:\Program Files\UltiMaker Cura 5.7\CuraEngine.exe",
@@ -2728,6 +2851,7 @@ def optimize_print_plan(
     adhesion_strategy: str,
 ) -> dict[str, str | float | int | bool]:
     profile = printer_profile
+    base_filament = get_base_filament(filament)
     base_speed = get_profile_material_value(profile, "speed", filament)
     nozzle_temp = get_profile_material_value(profile, "nozzle", filament)
     bed_temp = get_profile_material_value(profile, "bed", filament)
@@ -2759,7 +2883,7 @@ def optimize_print_plan(
         support_strategy == "Always on"
         or (
             support_strategy == "Auto"
-            and (filament in {"PETG", "ABS", "ASA", "TPU", "Nylon", "PC", "CF Nylon"} or print_goal == "Functional strength")
+            and (base_filament in {"PETG", "ABS", "ASA", "TPU", "Nylon", "PC", "CF Nylon"} or print_goal == "Functional strength")
         )
     )
     if support_strategy == "Disabled":
@@ -2786,11 +2910,11 @@ def optimize_print_plan(
             "Balanced production": 0.12,
             "Detail / cosmetic": 0.08,
         }
-    if filament in {"ABS", "ASA", "Nylon", "PC", "CF Nylon"} and not heated_chamber:
+    if base_filament in {"ABS", "ASA", "Nylon", "PC", "CF Nylon"} and not heated_chamber:
         optimized_speed = max(20, int(optimized_speed * 0.9))
-    if filament in {"PETG", "ABS", "ASA", "Nylon", "PC", "CF Nylon"} and not heated_bed:
+    if base_filament in {"PETG", "ABS", "ASA", "Nylon", "PC", "CF Nylon"} and not heated_bed:
         bed_temp = max(0, int(bed_temp * 0.85))
-    support_pattern = "Grid" if filament in {"ABS", "ASA", "PC", "CF Nylon"} else "Lines"
+    support_pattern = "Grid" if base_filament in {"ABS", "ASA", "PC", "CF Nylon"} else "Lines"
     infill_pattern = "Gyroid" if print_goal == "Functional strength" else ("Lines" if print_goal == "Visual prototype" else "Grid")
     first_layer_height = round(max(layer_height_map[quality_profile], min(nozzle_diameter * 0.75, layer_height_map[quality_profile] * 1.4)), 2)
     return {
@@ -2846,6 +2970,8 @@ def analyze_mesh(uploaded_file, printer_name: str, printer_profile: dict[str, ob
         "scaled_extents_mm": None,
         "scale_factor": 1.0,
         "scale_hint": None,
+        "longest_original_dimension_mm": None,
+        "longest_corrected_dimension_mm": None,
         "likely_unit_case": "Unknown",
         "fit_margin_mm": None,
         "bed_use_percent": None,
@@ -2894,6 +3020,7 @@ def analyze_mesh(uploaded_file, printer_name: str, printer_profile: dict[str, ob
         analysis["watertight"] = bool(mesh.is_watertight)
         extents = [round(float(value), 2) for value in mesh.extents.tolist()]
         analysis["extents_mm"] = extents
+        analysis["longest_original_dimension_mm"] = round(max(extents), 2) if extents else None
         scale_factor, scale_hint = infer_scale_adjustment(extents, printer_profile)
         analysis["scale_hint"] = scale_hint
         if scale_factor == 1000.0:
@@ -2913,6 +3040,8 @@ def analyze_mesh(uploaded_file, printer_name: str, printer_profile: dict[str, ob
             analysis["scaled_extents_mm"] = [round(value * scale_factor, 2) for value in extents]
         else:
             analysis["scaled_extents_mm"] = extents
+        if analysis["scaled_extents_mm"]:
+            analysis["longest_corrected_dimension_mm"] = round(max(analysis["scaled_extents_mm"]), 2)
         analysis["preview_mesh"] = build_preview_mesh_data(mesh, float(analysis.get("scale_factor", 1.0)))
 
         if not mesh.is_watertight:
@@ -3125,7 +3254,12 @@ def analyze_mesh(uploaded_file, printer_name: str, printer_profile: dict[str, ob
                 analysis["risk_level"] = "Medium"
             else:
                 analysis["risk_level"] = "Low"
-        analysis["notes"].append(scale_hint)
+        if analysis["scale_factor"] != 1.0 and analysis["longest_corrected_dimension_mm"] is not None:
+            analysis["notes"].append(
+                f"{scale_hint} Longest corrected dimension: {analysis['longest_corrected_dimension_mm']:.2f} mm."
+            )
+        else:
+            analysis["notes"].append(scale_hint)
         if analysis["fit_style"] != "Unknown":
             analysis["notes"].append(str(analysis["fit_style"]))
     except Exception as exc:
@@ -3437,6 +3571,7 @@ def generate_gcode(
     handoff_contract: dict[str, object] | None = None,
 ) -> str:
     sanitized_name = filename.replace(";", "_")
+    base_filament = get_base_filament(filament)
     extrusion_multiplier = {
         "PLA": 0.98,
         "PETG": 1.03,
@@ -3446,7 +3581,7 @@ def generate_gcode(
         "Nylon": 1.04,
         "PC": 1.02,
         "CF Nylon": 0.97,
-    }.get(filament, 1.0)
+    }.get(base_filament, 1.0)
     feedrate = speed * 60
     contract_comments = format_handoff_contract_comments(handoff_contract) if handoff_contract else ""
     return textwrap.dedent(
@@ -4277,7 +4412,7 @@ st.markdown(
     """
     <div class="hero-card">
         <div class="section-label">CipherSlice Control Plane</div>
-        <div class="hero-title">Smart Print Planning + Secure Delivery</div>
+        <div class="hero-title">Build + Review Your Print</div>
         <div class="hero-subtitle">
             CipherSlice now separates dependable printing from blueprint intelligence. Consumers can
             either upload a real 3D mesh for immediate printer-targeted output, or submit a structured
@@ -4311,6 +4446,7 @@ if "experience_mode" not in st.session_state:
     st.session_state["experience_mode"] = "Beginner"
 
 persona = get_persona()
+
 st.markdown('<div class="panel-card">', unsafe_allow_html=True)
 if st.session_state.get("active_job"):
     active_name = st.session_state["active_job"].get("filename", "current job")
@@ -4431,7 +4567,7 @@ left_col, right_col = st.columns([1.25, 0.85], gap="large")
 with left_col:
     st.markdown('<div class="panel-card">', unsafe_allow_html=True)
     if mode == "Reliable Print Mode":
-        st.markdown("### Step 1: Input Zone")
+        st.markdown("### Step 1: Start Your Print")
         st.markdown(
             '<div class="mode-banner"><strong>Reliable Print Mode</strong><br/>'
             "Upload a real mesh file and CipherSlice will prepare a printer-targeted print package.</div>",
@@ -4450,6 +4586,7 @@ with left_col:
             "and review path, not guaranteed final G-code from a single image.</div>",
             unsafe_allow_html=True,
         )
+        st.caption("PDF is accepted here for technical drawings only. Real print mode still expects mesh files like STL, OBJ, or 3MF.")
         uploaded_file = st.file_uploader(
             "Upload a structured technical drawing",
             type=["png", "jpg", "jpeg", "pdf"],
@@ -4516,9 +4653,12 @@ with left_col:
     st.caption(f"Printer family: {selected_printer_profile.get('family', 'Unknown')}")
     st.caption(selected_printer_profile.get("printer_note", ""))
     st.markdown('<div class="setting-card">', unsafe_allow_html=True)
-    filament = st.radio("Filament Type", FILAMENT_TYPES, horizontal=True)
+    filament = st.selectbox("Filament Type", FILAMENT_TYPES)
     st.caption(FILAMENT_DETAILS[filament]["summary"])
+    st.caption(f"Strength profile: {FILAMENT_DETAILS[filament]['strength']}")
     st.caption(f"Watch for: {FILAMENT_DETAILS[filament]['warning']}")
+    if is_abrasive_filament(filament):
+        st.warning("This fiber-filled material should use a hardened or wear-resistant nozzle for repeat printing.")
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown('<div class="setting-card">', unsafe_allow_html=True)
     quality_profile = st.radio(
@@ -4561,15 +4701,14 @@ with left_col:
     auto_scale_mesh = st.checkbox(
         "Auto-correct likely unit mismatch for mesh uploads",
         value=True,
-        help="CipherSlice will suggest or apply a scale correction when the model looks implausibly small or large.",
+        help="CipherSlice will suggest or apply a scale correction when the model looks implausibly small or large, then report the longest corrected dimension so you can sanity-check it.",
     )
     st.markdown(
         """
         <div class="workflow-style-card">
-            <div class="workflow-style-title">Workflow Style</div>
+            <div class="workflow-style-title">Choose Your Control Level</div>
             <div class="workflow-style-copy">
-                Choose how much control you want before building the print plan. Beginner keeps the setup simple.
-                Advanced opens more detailed tuning.
+                Beginner keeps the setup simple and continues below. Advanced opens a dedicated workspace while still using the same live job underneath.
             </div>
         </div>
         """,
@@ -4577,23 +4716,21 @@ with left_col:
     )
     workflow_col1, workflow_col2 = st.columns(2, gap="medium")
     with workflow_col1:
-        st.button(
+        if st.button(
             "Beginner",
             use_container_width=True,
             type="primary" if st.session_state.get("experience_mode", "Beginner") == "Beginner" else "secondary",
-            on_click=set_experience_mode,
-            args=("Beginner",),
             key="workflow_beginner",
-        )
+        ):
+            st.session_state["experience_mode"] = "Beginner"
     with workflow_col2:
-        st.button(
+        if st.button(
             "Advanced",
             use_container_width=True,
             type="primary" if st.session_state.get("experience_mode", "Beginner") == "Advanced" else "secondary",
-            on_click=set_experience_mode,
-            args=("Advanced",),
             key="workflow_advanced",
-        )
+        ):
+            open_advanced_workspace()
     experience_mode = st.session_state.get("experience_mode", "Beginner")
     nozzle_override = 0
     bed_override = 0
@@ -4723,7 +4860,7 @@ with left_col:
 
 with right_col:
     st.markdown('<div class="panel-card">', unsafe_allow_html=True)
-    st.markdown("### Print Snapshot")
+    st.markdown("### Quick Job View")
     st.caption(f"Copilot tone: `{persona['label']}`")
     profile_mode_label, profile_mode_copy = build_profile_mode_label(mode, slicer_path)
     st.markdown(f'<div class="mode-pill">{profile_mode_label}</div>', unsafe_allow_html=True)
@@ -4748,11 +4885,13 @@ with right_col:
     st.markdown(
         f"""
         **Printer volume:** `{format_xyz_dims(bed_x, bed_y, bed_z)}`  
+        **Printer family:** `{selected_printer_profile.get('family', 'Unknown')}`  
         **Material profile:** `{filament}`  
+        **Material strength:** `{FILAMENT_DETAILS[filament]['strength']}`  
         **Optimization mode:** `{quality_profile}` / `{print_goal}`  
         **Support + adhesion:** `{support_strategy}` / `{adhesion_strategy}`  
         **Delivery mode:** `{delivery_mode}`  
-        **G-code flavor:** `{selected_printer_profile.get('gcode_flavor', 'Unknown')}`
+        **Printer command style:** `{selected_printer_profile.get('gcode_flavor', 'Unknown')}`
         """
     )
     if wants_encryption:
@@ -4883,7 +5022,7 @@ if active_job:
         f'<div class="state-banner {execution_class}"><strong>{execution_label}</strong><br/>{execution_copy}</div>',
         unsafe_allow_html=True,
     )
-    st.markdown("### Step 2: Review + Tune Plan")
+    st.markdown("### Step 2: Review + Adjust")
     st.markdown(
         '<div class="subsection-card"><div class="subsection-title">Live Plan</div>'
         f'<div class="subsection-copy">CipherSlice generated a first-pass plan for `{filename}`. '
@@ -5113,7 +5252,7 @@ if active_job:
         editable_jerk_control = int(st.session_state.get(f"edit_jerk_{artifact_hash}", editable_jerk_control))
         editable_stability_mode = str(st.session_state.get(f"edit_stability_{artifact_hash}", editable_stability_mode))
     if experience_mode == "Advanced":
-        with st.expander("Advanced tuning cards"):
+        with st.expander("Advanced tuning cards", expanded=False):
             st.caption(
                 "Quick guide: these controls now behave more like a slicer profile editor. You can shape surface speed, first-layer behavior, support style, motion aggression, and profile personality without losing the beginner path."
             )
@@ -5415,6 +5554,8 @@ if active_job:
     slicer_setup_bundle = None
     operator_handoff_sheet = None
     plan_diff_lines = []
+    real_gcode = None
+    slicer_message = "No slicer run has been attempted yet."
 
     overall_confidence, consensus_scores, objections, release_allowed = score_release_gate(
         mode=mode,
@@ -5514,6 +5655,7 @@ if active_job:
             - Final G-code withheld until geometry is confirmed
             """
         ).strip()
+        slicer_message = "Blueprint Assist Mode does not run a slicer backend. It prepares a reconstruction brief instead."
 
     agent_handoffs = build_agent_handoff_states(
         mode,
@@ -5549,7 +5691,7 @@ if active_job:
         encrypted_artifact, encryption_salt = encrypt_artifact(primary_artifact, encryption_passphrase)
 
     st.write("")
-    st.markdown("### Step 3: What CipherSlice Prepared")
+    st.markdown("### Step 3: Plan + Delivery Package")
     if agent_runtime_meta["using_live_workers"]:
         st.caption(f"{agent_runtime_meta['status']}: {agent_runtime_meta['detail']}")
     elif agent_runtime_meta["status"] != "Disabled":
@@ -5651,7 +5793,7 @@ if active_job:
     )
     printer_material_notes = build_printer_material_notes(printer_profile, filament, mesh_analysis)
     machine_profile_notes = build_machine_profile_notes(printer_profile, filament)
-    is_production_print_file = mode == "Reliable Print Mode" and bool(slicer_path)
+    is_production_print_file = mode == "Reliable Print Mode" and bool(real_gcode)
     print_file_download_label = (
         "Download Print File"
         if is_production_print_file
@@ -5672,6 +5814,21 @@ if active_job:
         if is_production_print_file
         else "I understand this is a planning preview, and I approve saving or sharing this setup package"
     )
+    output_source_title = "Planning preview"
+    output_source_copy = "CipherSlice is still showing a planning-stage preview, not a confirmed printer-ready file."
+    output_source_state = "Preview only"
+    if mode == "Blueprint Assist Mode":
+        output_source_title = "Blueprint brief"
+        output_source_copy = "This mode produces a reconstruction brief and review packet, not G-code."
+        output_source_state = "Draft brief"
+    elif real_gcode:
+        output_source_title = "Real Prusa output"
+        output_source_copy = "This file came from a real PrusaSlicer backend run. The preview below is actual slicer-generated G-code."
+        output_source_state = "Printer-ready path"
+    elif slicer_path:
+        output_source_title = "Slicer detected, output fallback used"
+        output_source_copy = f"CipherSlice found a slicer backend, but this specific run did not return a usable G-code file. Current output is still a preview. Reason: {slicer_message}"
+        output_source_state = "Fallback used"
     confidence_notes = build_confidence_explanation(mode, overall_confidence, slicer_path, objections)
     pre_printer_checklist = build_pre_printer_checklist(
         mode,
@@ -5701,8 +5858,8 @@ if active_job:
 
     with result_col:
         st.markdown('<div class="panel-card">', unsafe_allow_html=True)
-        st.markdown("### Current Print Plan")
-        summary_col1, summary_col2 = st.columns(2, gap="medium")
+        st.markdown("### Current Plan Workspace")
+        summary_col1, summary_col2, summary_col3 = st.columns(3, gap="medium")
         with summary_col1:
             with st.container(border=True):
                 st.markdown("#### Ready Now")
@@ -5710,20 +5867,34 @@ if active_job:
                 st.write(phase_copy)
         with summary_col2:
             with st.container(border=True):
+                st.markdown("#### Output Source")
+                st.markdown(f"**{output_source_title}**")
+                st.write(output_source_copy)
+                st.caption(f"Current output state: {output_source_state}")
+        with summary_col3:
+            with st.container(border=True):
                 st.markdown("#### Still To Connect")
                 if mode != "Reliable Print Mode":
                     st.write("A validated 3D model still needs to be created or imported before CipherSlice can move into real slicing.")
-                elif slicer_path:
+                elif real_gcode:
                     st.write("A connected printer is optional for now. You only need hardware later when you want to physically run the approved print.")
+                elif slicer_path:
+                    st.write("Prusa is installed and reachable, but this run still needs a cleaner slicing pass before CipherSlice should call the output printer-ready.")
                 else:
                     st.write("A real slicer backend still needs to be connected. That is the main reason the preview stays in planning mode instead of full production output.")
         review_area = "Overview"
         if mode == "Reliable Print Mode":
+            workspace_key = f"review_workspace_{artifact_hash}"
+            pending_workspace = st.session_state.pop("review_workspace_target", None)
+            if pending_workspace:
+                st.session_state[workspace_key] = pending_workspace
+            elif experience_mode == "Advanced" and workspace_key not in st.session_state:
+                st.session_state[workspace_key] = "Tuning"
             review_area = st.radio(
                 "Review workspace",
                 ["Overview", "Fit + 3D", "Tuning", "Compare", "Release"],
                 horizontal=True,
-                key=f"review_workspace_{artifact_hash}",
+                key=workspace_key,
             )
             st.caption("This keeps the workflow in focused sections so the page feels more like a workspace and less like one long report.")
         st.markdown(
@@ -5866,6 +6037,10 @@ if active_job:
                     )
                     if mesh_analysis and mesh_analysis.get("geometry_profile"):
                         st.markdown(f"**Geometry profile:** `{mesh_analysis['geometry_profile']}`")
+                    if mesh_analysis and mesh_analysis.get("longest_corrected_dimension_mm") is not None:
+                        st.markdown(
+                            f"**Longest corrected dimension:** `{mesh_analysis['longest_corrected_dimension_mm']:.2f} mm`"
+                        )
                     if mesh_analysis and mesh_analysis.get("adhesion_hint"):
                         st.markdown(f"**Bed grip hint:** `{mesh_analysis['adhesion_hint']}`")
                     if mesh_analysis and mesh_analysis.get("support_density_hint"):
@@ -6319,6 +6494,12 @@ if active_job:
                 st.markdown("### Readiness Check")
                 for label, value in status_rows:
                     st.markdown(f"- **{label}:** `{value}`")
+                if mode == "Reliable Print Mode":
+                    with st.container(border=True):
+                        st.markdown("#### Slicer Run Status")
+                        st.markdown(f"**{output_source_title}**")
+                        st.write(output_source_copy)
+                        st.caption(slicer_message)
             if review_area == "Release":
                 with st.container(border=True):
                     st.markdown("#### Final Human Checkpoint")
@@ -6551,7 +6732,7 @@ if active_job:
         st.markdown('<div class="panel-card">', unsafe_allow_html=True)
         with st.container(border=True):
             if mode == "Reliable Print Mode":
-                st.markdown("#### Preflight Review")
+                st.markdown("#### Readiness Check")
                 build_x, build_y, build_z = parse_bed_dimensions(printer_profile)
                 st.markdown(
                     f"""
@@ -6576,6 +6757,10 @@ if active_job:
                         sx_dim, sy_dim, sz_dim = mesh_analysis["scaled_extents_mm"]
                         st.markdown(f"- **Scaled part size:** `{format_xyz_dims(sx_dim, sy_dim, sz_dim)}`")
                         st.markdown(f"- **Applied scale factor:** `{mesh_analysis['scale_factor']}x`")
+                    if mesh_analysis.get("longest_corrected_dimension_mm") is not None:
+                        st.markdown(
+                            f"- **Longest corrected dimension:** `{mesh_analysis['longest_corrected_dimension_mm']:.2f} mm`"
+                        )
                     if mesh_analysis["face_count"]:
                         st.markdown(f"- **Mesh faces:** `{mesh_analysis['face_count']:,}`")
                     if mesh_analysis["vertex_count"]:
@@ -6586,7 +6771,7 @@ if active_job:
                         st.caption(note)
                     for note in printer_material_notes:
                         st.caption(note)
-                st.markdown("#### Engine Diagnostics")
+                st.markdown("#### Slicer Status")
                 for note in engine_diagnostics:
                     st.markdown(f"- {note}")
             else:
@@ -6603,7 +6788,7 @@ if active_job:
                     """
                 )
             if mode == "Reliable Print Mode":
-                st.markdown("#### Print Engine Connection")
+                st.markdown("#### Slicer Connection")
                 st.markdown(
                     f"""
                     - **Detected print engine:** `{slicer_label or 'Not detected'}`
@@ -6646,8 +6831,14 @@ if active_job:
 
             st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
             if mode == "Reliable Print Mode":
-                st.markdown("##### Planned Output Preview" if not slicer_path else "##### Output Preview")
-                if not slicer_path:
+                st.markdown("##### Real G-code Preview" if real_gcode else "##### Planning Preview")
+                if real_gcode:
+                    st.success("This preview is real PrusaSlicer-generated G-code from the current job.")
+                elif slicer_path:
+                    st.warning(
+                        "Prusa is installed, but this run still fell back to preview output. Treat this block as planning-stage output until the slicer run is fully validated."
+                    )
+                else:
                     st.info(
                         "Mesh uploads are the right path for real fabrication, but this environment still needs a slicer backend "
                         "such as `PrusaSlicer`, `OrcaSlicer`, or `CuraEngine` before CipherSlice can claim true production release."
